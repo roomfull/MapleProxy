@@ -45,4 +45,6 @@ PFM SDK sources jar SHA-256：`9312B13C0A7ABE4A1A7840D646C9136ADAEC7647D73B49BD6
 
 ## 主代理发布与复核补记
 
-待主代理补记实际执行的构建版本、服务重启、浏览器结果、独立复核与应用验收证据；目前没有登记 PASS。
+主代理在本轮构建后通过真实浏览器访问隔离 smoke fixture `http://localhost:52721` 完成 Activity 页面 QA：DOM 与截图确认 4 行（validation400 / incomplete200 / upstream429 / success）；展开详情可读，验证失败行展示 `messages[0].startsNewUserRequest` 完整路径及未进入运行时，incomplete 行展示 max_output_tokens、temperature 过滤、本地与上游 ID；“未完整完成”筛选只保留 1 行。全页截图保存在本地忽略目录 `.tmp/client-compatibility-diagnostics.jpg`，由主代理查看确认。该浏览器验收使用固定合成密码、临时数据与合成上游，不使用生产数据，不代表上述真实应用通过。
+
+生产重启、独立复核与实际应用证据仍待主代理补记；当前实际应用矩阵未登记 PASS。
