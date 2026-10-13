@@ -693,7 +693,6 @@ describe("request normalization", () => {
   });
   it.each([
     { n: 2 },
-    { stop: ["END"] },
     { logprobs: true },
     { top_logprobs: 2 },
     { audio: { voice: "alloy" } },

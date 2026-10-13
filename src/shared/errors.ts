@@ -1,4 +1,7 @@
+import type { RequestDiagnostic } from "../protocol/types.js";
+
 export class AppError extends Error {
+  diagnostics?: RequestDiagnostic[];
   constructor(
     public readonly status: number,
     public readonly code: string,

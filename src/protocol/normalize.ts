@@ -1,5 +1,15 @@
 import type { JsonObject } from "../auth/runtime.js";
 import type { RenderStreamOptions } from "./events.js";
+import { isDeepStrictEqual } from "node:util";
+import { AppError } from "../shared/errors.js";
+import { cleanClientRequest } from "./client-cleanup.js";
+import {
+  clientTools,
+  filterRequestField,
+  validateNativeOptions,
+  webTools,
+} from "./capabilities.js";
+import type { RequestDiagnostic, ResponseContext } from "./types.js";
 import {
   assertNativeNamespace,
   assistantHistory,
@@ -11,76 +21,6 @@ import {
   string,
 } from "./chat.js";
 
-// Ordinary unsupported knobs may be filtered; feature semantics must be rejected.
-const ordinary = new Set([
-  "temperature",
-  "top_p",
-  "max_tokens",
-  "max_completion_tokens",
-  "max_output_tokens",
-  "metadata",
-  "safety_identifier",
-  "user",
-]);
-const unsupported = new Set([
-  "background",
-  "conversation",
-  "previous_response_id",
-  "prompt",
-  "moderation",
-  "multi_agent",
-  "max_tool_calls",
-  "prompt_cache_retention",
-  "truncation",
-  "stop",
-  "top_logprobs",
-  "audio",
-  "prediction",
-  "functions",
-  "function_call",
-  "web_search_options",
-  "frequency_penalty",
-  "presence_penalty",
-  "logit_bias",
-]);
-const nativeFields = new Set([
-  "model",
-  "input",
-  "instructions",
-  "tools",
-  "tool_choice",
-  "parallel_tool_calls",
-  "reasoning",
-  "text",
-  "include",
-  "prompt_cache_key",
-  "prompt_cache_options",
-  "service_tier",
-  "stream_options",
-  "access_programs",
-  "context_management",
-]);
-const chatFields = new Set([
-  "model",
-  "messages",
-  "tools",
-  "tool_choice",
-  "parallel_tool_calls",
-  "reasoning_effort",
-  "response_format",
-  "verbosity",
-  "service_tier",
-  "stream_options",
-  "prompt_cache_key",
-  "prompt_cache_options",
-]);
-const webTools = new Set([
-  "web_search",
-  "web_search_2025_08_26",
-  "web_search_preview",
-  "web_search_preview_2025_03_11",
-]);
-const clientTools = new Set(["shell", "local_shell", "apply_patch"]);
 function array(value: unknown, param: string): any[] {
   if (!Array.isArray(value)) requestError(param, `${param} must be an array.`);
   return value;
@@ -328,17 +268,8 @@ function chatInput(value: unknown): JsonObject[] {
       )
     )
       requestError(`${param}.role`, "Unsupported Chat role.");
-    for (const key of Object.keys(message))
-      if (
-        ![
-          "role",
-          "content",
-          "tool_calls",
-          "tool_call_id",
-          "refusal",
-          "annotations",
-        ].includes(key)
-      )
+    for (const key of ["function_call", "audio"])
+      if (message[key] !== undefined)
         requestError(
           `${param}.${key}`,
           `Unsupported message field ${key}.`,
@@ -547,76 +478,44 @@ export function normalizeRequest(
   stream: boolean;
   ignoredParams: string[];
   renderOptions: RenderStreamOptions;
+  diagnostics: RequestDiagnostic[];
+  responseContext: ResponseContext;
 } {
+  const diagnostics: RequestDiagnostic[] = [];
+  try {
+    return normalize(input, format, diagnostics);
+  } catch (error) {
+    if (error instanceof AppError) error.diagnostics = diagnostics;
+    throw error;
+  }
+}
+
+function normalize(
+  input: unknown,
+  format: "responses" | "chat",
+  diagnostics: RequestDiagnostic[],
+) {
   const source = object(input, "body");
-  const model = string(source.model, "model");
+  const copied = cleanClientRequest(source, format, diagnostics);
+  const model = string(copied.model, "model");
   if (!model.trim()) requestError("model", "model must not be blank.");
-  if (source.stream !== undefined && typeof source.stream !== "boolean")
+  if (copied.stream !== undefined && typeof copied.stream !== "boolean")
     requestError("stream", "stream must be boolean.");
-  if (source.store !== undefined && source.store !== false)
+  if (copied.store !== undefined && copied.store !== false)
     requestError(
       "store",
       "Persistent response storage is not supported.",
       "unsupported_parameter",
     );
-  let copied: JsonObject;
-  try {
-    copied = JSON.parse(JSON.stringify(source));
-  } catch {
-    requestError("body", "Request must be a JSON object.");
-  }
   const body: JsonObject = { model, store: false, stream: true },
     ignoredParams: string[] = [],
-    renderOptions: RenderStreamOptions = { includeUsage: false };
+    renderOptions: RenderStreamOptions = { includeUsage: false },
+    responseContext: ResponseContext = {
+      toolNames: [],
+      legacyFunctionCall: false,
+    };
   for (const [key, value] of Object.entries(copied)) {
-    if (["model", "store", "stream"].includes(key)) continue;
-    if (ordinary.has(key)) {
-      ignoredParams.push(key);
-      continue;
-    }
-    if (key === "n" && format === "chat" && value === 1) continue;
-    if (key === "logprobs" && value === false) continue;
-    if (
-      key === "modalities" &&
-      Array.isArray(value) &&
-      value.length === 1 &&
-      value[0] === "text" &&
-      format === "chat"
-    )
-      continue;
-    if (
-      unsupported.has(key) ||
-      key === "n" ||
-      key === "logprobs" ||
-      key === "modalities"
-    )
-      requestError(
-        key,
-        `${key} is not supported by this route.`,
-        "unsupported_parameter",
-      );
-    // Known fields from the other wire format require explicit conversion.
-    // Unknown model options remain the authoritative upstream's decision.
-    if (
-      (format === "chat" ? nativeFields : chatFields).has(key) &&
-      !(format === "chat" ? chatFields : nativeFields).has(key)
-    )
-      requestError(
-        key,
-        `${key} is not supported by this route.`,
-        "unsupported_parameter",
-      );
-    if (
-      [
-        "input",
-        "messages",
-        "tools",
-        "tool_choice",
-        "reasoning_effort",
-        "response_format",
-        "verbosity",
-      ].includes(key)
-    )
+    if (filterRequestField(key, value, format, ignoredParams, diagnostics))
       continue;
     // Own JSON keys such as __proto__ must never invoke inherited setters.
     Object.defineProperty(body, key, {
@@ -641,111 +540,74 @@ export function normalizeRequest(
       typeof copied.reasoning_effort !== "string"
     )
       requestError("reasoning_effort", "Invalid reasoning effort.");
-    body.reasoning = { effort: copied.reasoning_effort };
+    if (body.reasoning !== undefined) object(body.reasoning, "reasoning");
+    if (
+      body.reasoning?.effort !== undefined &&
+      body.reasoning.effort !== copied.reasoning_effort
+    )
+      requestError(
+        "reasoning_effort",
+        "reasoning_effort conflicts with reasoning.effort.",
+      );
+    body.reasoning = { ...body.reasoning, effort: copied.reasoning_effort };
+    diagnostics.push({
+      path: "reasoning_effort",
+      action: "normalized",
+      reason: "protocol_conversion",
+    });
   }
   if (copied.response_format !== undefined) {
     const config = object(copied.response_format, "response_format");
+    let converted: JsonObject;
     if (config.type === "json_schema")
-      body.text = {
-        format: {
-          type: "json_schema",
-          ...object(config.json_schema, "response_format.json_schema"),
-        },
+      converted = {
+        type: "json_schema",
+        ...object(config.json_schema, "response_format.json_schema"),
       };
-    else if (["text", "json_object"].includes(config.type))
-      body.text = { format: config };
+    else if (["text", "json_object"].includes(config.type)) converted = config;
     else
       requestError(
         "response_format",
         "Unsupported response format.",
         "unsupported_parameter",
       );
-  }
-  if (format === "chat" && copied.verbosity !== undefined)
-    body.text = { ...body.text, verbosity: copied.verbosity };
-  if (
-    body.parallel_tool_calls !== undefined &&
-    typeof body.parallel_tool_calls !== "boolean"
-  )
-    requestError("parallel_tool_calls", "parallel_tool_calls must be boolean.");
-  if (
-    body.instructions !== undefined &&
-    body.instructions !== null &&
-    typeof body.instructions !== "string"
-  )
-    requestError("instructions", "instructions must be a string.");
-  for (const key of [
-    "reasoning",
-    "text",
-    "prompt_cache_options",
-    "access_programs",
-  ])
-    if (body[key] !== undefined && body[key] !== null) object(body[key], key);
-  if (body.context_management != null)
-    array(body.context_management, "context_management").forEach((x) =>
-      object(x, "context_management"),
-    );
-  if (
-    body.reasoning?.effort != null &&
-    typeof body.reasoning.effort !== "string"
-  )
-    requestError("reasoning.effort", "Invalid reasoning effort.");
-  for (const key of ["summary", "generate_summary"])
+    if (body.text !== undefined) object(body.text, "text");
     if (
-      body.reasoning?.[key] != null &&
-      !["auto", "concise", "detailed"].includes(body.reasoning[key])
+      body.text?.format !== undefined &&
+      !isDeepStrictEqual(body.text.format, converted)
     )
-      requestError(`reasoning.${key}`, "Invalid reasoning summary setting.");
-  if (body.text?.format !== undefined) {
-    const config = object(body.text.format, "text.format");
-    if (!["text", "json_object", "json_schema"].includes(config.type))
-      requestError("text.format", "Unsupported text format.");
-    if (config.type === "json_schema") {
-      nativeName(config.name, "text.format.name");
-      object(config.schema, "text.format.schema");
-      if (config.strict != null && typeof config.strict !== "boolean")
-        requestError("text.format.strict", "strict must be boolean.");
-    }
-  }
-  if (
-    body.text?.verbosity != null &&
-    !["low", "medium", "high"].includes(body.text.verbosity)
-  )
-    requestError("text.verbosity", "Invalid text verbosity.");
-  if (body.include !== undefined)
-    array(body.include, "include").forEach((x) => {
-      if (
-        ![
-          "web_search_call.results",
-          "web_search_call.action.sources",
-          "message.input_image.image_url",
-          "reasoning.encrypted_content",
-        ].includes(x)
-      )
-        requestError(
-          "include",
-          `Unsupported include field ${x}.`,
-          "unsupported_parameter",
-        );
+      requestError(
+        "response_format",
+        "response_format conflicts with text.format.",
+      );
+    body.text = { ...body.text, format: converted };
+    diagnostics.push({
+      path: "response_format",
+      action: "normalized",
+      reason: "protocol_conversion",
     });
-  if (body.stream_options !== undefined) {
-    const options = object(body.stream_options, "stream_options");
-    const keys =
-      format === "chat"
-        ? ["include_usage", "include_obfuscation"]
-        : ["include_obfuscation"];
-    for (const [key, value] of Object.entries(options))
-      if (!keys.includes(key) || typeof value !== "boolean")
-        requestError(
-          `stream_options.${key}`,
-          "Unsupported stream option.",
-          "unsupported_parameter",
-        );
-    if (format === "chat")
-      renderOptions.includeUsage = options.include_usage === true;
-    body.stream_options = Object.fromEntries(
-      Object.entries(options).filter(([key]) => key !== "include_usage"),
-    );
   }
-  return { body, stream: source.stream === true, ignoredParams, renderOptions };
+  if (format === "chat" && copied.verbosity !== undefined) {
+    if (body.text !== undefined) object(body.text, "text");
+    if (
+      body.text?.verbosity !== undefined &&
+      body.text.verbosity !== copied.verbosity
+    )
+      requestError("verbosity", "verbosity conflicts with text.verbosity.");
+    body.text = { ...body.text, verbosity: copied.verbosity };
+    diagnostics.push({
+      path: "verbosity",
+      action: "normalized",
+      reason: "protocol_conversion",
+    });
+  }
+  validateNativeOptions(body, format, renderOptions);
+  return {
+    body,
+    stream: copied.stream === true,
+    ignoredParams,
+    renderOptions,
+    diagnostics,
+    responseContext,
+  };
 }
