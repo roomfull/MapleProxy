@@ -61,7 +61,11 @@ let app: FastifyInstance,
   cookie: string;
 let cleanup: () => Promise<void>, calls: JsonObject[], runtimeEntries: number;
 let handler: (body: JsonObject, response: ServerResponse) => void;
+let fixtureCleanup: Promise<void> | undefined;
+let upstreamFailure: { error: unknown } | undefined;
 beforeEach(async () => {
+  fixtureCleanup = undefined;
+  upstreamFailure = undefined;
   const data = await fixture();
   cleanup = data.cleanup;
   calls = [];
@@ -82,7 +86,10 @@ beforeEach(async () => {
       expect(request.url).toBe("/v1/responses");
       expect(request.headers.authorization).toBe("Bearer access_a");
       handler(body, response);
-    })().catch(() => response.destroy());
+    })().catch((error: unknown) => {
+      upstreamFailure ??= { error };
+      response.destroy();
+    });
   });
   await new Promise<void>((resolve) =>
     upstream.listen(0, "127.0.0.1", resolve),
@@ -116,13 +123,22 @@ beforeEach(async () => {
   expect(login.status).toBe(200);
   cookie = login.headers.get("set-cookie")!.split(";")[0]!;
 });
-afterEach(async () => {
-  app?.server.closeAllConnections();
-  await app?.close();
-  upstream?.closeAllConnections();
-  await new Promise<void>((resolve) => upstream?.close(() => resolve()));
-  await cleanup?.();
-});
+async function finishFixture() {
+  fixtureCleanup ??= (async () => {
+    app?.server.closeAllConnections();
+    await app?.close();
+    upstream?.closeAllConnections();
+    await new Promise<void>((resolve) => upstream?.close(() => resolve()));
+    await cleanup?.();
+  })();
+  await fixtureCleanup;
+  if (upstreamFailure) {
+    const { error } = upstreamFailure;
+    upstreamFailure = undefined;
+    throw error;
+  }
+}
+afterEach(finishFixture);
 async function post(body: JsonObject, route = "chat/completions") {
   return fetch(`${url}/v1/${route}`, {
     method: "POST",
@@ -140,6 +156,32 @@ async function activity() {
     ).json()
   ).requests as JsonObject[];
 }
+
+it("SYNTHETIC upstream handler failure reports the original error after fixture cleanup", async () => {
+  const originalError = new Error(
+    "synthetic upstream handler assertion failed",
+  );
+  const laterError = new Error("later synthetic upstream handler failure");
+  let cleanupFinished = false;
+  const cleanupData = cleanup;
+  cleanup = async () => {
+    await cleanupData();
+    cleanupFinished = true;
+  };
+  handler = () => {
+    throw calls.length === 1 ? originalError : laterError;
+  };
+  const response = await post(workBuddyRequest());
+  expect(response.ok).toBe(false);
+  expect((await post(workBuddyRequest())).ok).toBe(false);
+  expect(calls).toHaveLength(2);
+  await expect(finishFixture()).rejects.toBe(originalError);
+  expect(cleanupFinished).toBe(true);
+  expect(app.server.listening).toBe(false);
+  expect(upstream.listening).toBe(false);
+  // Reporting consumes the error; the registered afterEach can await cleanup again.
+  await expect(finishFixture()).resolves.toBeUndefined();
+});
 
 it(`${contractSources.workBuddy.version}: filters the observed field in a SYNTHETIC request through HTTP`, async () => {
   const response = await post(workBuddyRequest());

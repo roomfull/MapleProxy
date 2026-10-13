@@ -91,7 +91,7 @@ try {
 }
 ```
 
-curl 输出的 `event: error` 表示流失败；HTTP 200 仅代表流开始成功。Chat 只有成功完成后才发送 `[DONE]`；Responses 要确认 `response.completed`。部分输出不能当作完整成功结果。
+curl 输出的 `event: error` 表示流失败；HTTP 200 仅代表流开始成功。Chat 要同时检查 `[DONE]` 和 `finish_reason`：可表示的未完整完成结果也会发送 `[DONE]`，并以 `length` / `content_filter` 标明原因；真正失败时不会发送正常的结束帧或 `[DONE]`。Responses 要区分终止事件 `response.completed` 与 `response.incomplete`。部分输出不能当作完整成功结果。
 
 ## 请求诊断
 
