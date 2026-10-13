@@ -8,6 +8,83 @@ import { createAccountRuntime } from "../src/auth/runtime.js";
 import { encryption, fixture, streamResponse } from "./helpers.js";
 import { ConnectionStore } from "../vendor/siwc/src/storage.js";
 const issuer = "https://auth.openai.com";
+test.each(["a", "unknown", "b"])(
+  "disconnect %s affects OAuth only when targeting B",
+  async (target) => {
+    const f = await fixture();
+    cleanups.push(f.cleanup);
+    let auth: URL;
+    let opened!: () => void;
+    const ready = new Promise<void>((resolve) => (opened = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const runtime = createAccountRuntime({
+      dataDir: f.dataDir,
+      encryption,
+      openBrowser: async (url) => {
+        auth = new URL(url);
+        await callback(auth, { client_id: "client_b" });
+        opened();
+        await gate;
+      },
+      fetch: async (url) => {
+        if (String(url).includes("openid-configuration")) return discovery();
+        if (String(url).endsWith("/jwks")) return Response.json(jwks);
+        if (String(url).endsWith("/revoke"))
+          return new Response("", { status: 200 });
+        if (String(url).endsWith("/token"))
+          return Response.json({
+            id_token: await token(
+              "client_b",
+              "b",
+              auth!.searchParams.get("nonce")!,
+            ),
+            access_token: "renewed_b",
+            refresh_token: "renewed_refresh_b",
+            token_type: "Bearer",
+            scope: "openid offline_access chatgpt.tokens.use.direct",
+            expires_in: 3600,
+          });
+        throw new Error("unexpected provider route");
+      },
+    });
+    const pending = runtime.signIn({ profileId: "b" });
+    const result = pending.then(
+      () => ({ ok: true }),
+      (error) => ({ ok: false, error }),
+    );
+    await ready;
+    try {
+      if (target === "unknown") {
+        const before = await f.store.withLock(() => f.store.read());
+        await expect(runtime.disconnect(target)).rejects.toMatchObject({
+          code: "profile_not_found",
+        });
+        expect(await f.store.withLock(() => f.store.read())).toEqual(before);
+      } else await runtime.disconnect(target);
+    } finally {
+      release();
+    }
+    if (target === "b") {
+      expect(await result).toMatchObject({
+        ok: false,
+        error: { code: "cancelled" },
+      });
+      expect(
+        (await f.store.withLock(() => f.store.read()))!.profiles.find(
+          (p) => p.id === "b",
+        )!.credentials,
+      ).toBeUndefined();
+      return;
+    }
+    expect(await result).toMatchObject({ ok: true });
+    expect(
+      (await f.store.withLock(() => f.store.read()))!.profiles.find(
+        (p) => p.id === "b",
+      )!.credentials!.accessToken,
+    ).toBe("renewed_b");
+  },
+);
 const pair = await generateKeyPair("RS256");
 const jwks = {
   keys: [
@@ -107,18 +184,52 @@ test("parallel OAuth attempts return connection_busy and cancellation preserves 
   const ready = new Promise<void>((r) => (opened = r));
   let released!: () => void;
   const hold = new Promise<void>((r) => (released = r));
+  let auth: URL;
+  let exchanges = 0;
+  const store = new ConnectionStore(dataDir, encryption);
   const runtime = createAccountRuntime({
     dataDir,
     encryption,
-    fetch: async () => discovery(),
+    fetch: async (url, init) => {
+      if (String(url).includes("openid-configuration")) return discovery();
+      if (String(url).endsWith("/jwks")) return Response.json(jwks);
+      if (String(url).endsWith("/token")) {
+        exchanges++;
+        expect((init!.body as URLSearchParams).get("client_id")).toBe(
+          "issued_client",
+        );
+        if (exchanges === 1) {
+          opened();
+          await hold;
+        }
+        return Response.json({
+          id_token: await token(
+            "issued_client",
+            "registered-subject",
+            auth!.searchParams.get("nonce")!,
+          ),
+          access_token: "registered-access",
+          refresh_token: "registered-refresh",
+          token_type: "Bearer",
+          scope: "openid offline_access chatgpt.tokens.use.direct",
+          expires_in: 3600,
+        });
+      }
+      throw new Error("Unexpected provider route");
+    },
     openBrowser: async (url) => {
-      await callback(new URL(url));
-      opened();
-      await hold;
+      auth = new URL(url);
+      expect(auth.searchParams.get("client_id")).toBe(
+        exchanges === 0 ? "dynamic_agent_client" : "issued_client",
+      );
+      await callback(auth);
     },
   });
   const pending = runtime.signIn({ newProfile: true });
   await ready;
+  const issued = (await store.withLock(() => store.read()))!
+    .pendingRegistrations[0]!;
+  expect(issued.clientId).toBe("issued_client");
   await expect(runtime.signIn({ newProfile: true })).rejects.toMatchObject({
     code: "connection_busy",
   });
@@ -128,6 +239,18 @@ test("parallel OAuth attempts return connection_busy and cancellation preserves 
   expect(
     (await runtime.listAccounts()).filter((a) => a.isDefault),
   ).toHaveLength(0);
+  expect(
+    (await store.withLock(() => store.read()))!.pendingRegistrations,
+  ).toEqual([issued]);
+  await runtime.signIn({ profileId: issued.id });
+  const saved = await store.withLock(() => store.read());
+  expect(saved!.pendingRegistrations).toEqual([]);
+  expect(saved!.profiles[0]).toMatchObject({
+    id: issued.id,
+    clientId: "issued_client",
+    status: "connected",
+  });
+  expect(exchanges).toBe(2);
 });
 test("JWKS outage preserves received rotation and recovery never spends old refresh token twice", async () => {
   const f = await fixture(Date.now() - 100);

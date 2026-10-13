@@ -3,6 +3,56 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createAccountRuntime } from "../src/auth/runtime.js";
 import { encryption, fixture, streamResponse } from "./helpers.js";
+test("return promptly aborts transport while next awaits a stalled SSE body", async () => {
+  const caller = new AbortController();
+  let transport: AbortSignal | undefined;
+  let reading!: () => void;
+  const started = new Promise<void>((resolve) => (reading = resolve));
+  const { runtime } = await setup(async (_url, init) => {
+    transport = init!.signal!;
+    return new Response(
+      new ReadableStream(
+        {
+          start(controller) {
+            transport!.addEventListener(
+              "abort",
+              () => controller.error(transport!.reason),
+              { once: true },
+            );
+          },
+          pull() {
+            reading();
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  });
+  const iterator = (
+    await runtime.requestResponses({
+      body: { model: "m", input: "x" },
+      signal: caller.signal,
+    })
+  ).events[Symbol.asyncIterator]();
+  const next = iterator.next().then(
+    () => undefined,
+    () => undefined,
+  );
+  await started;
+  const returned = iterator.return!();
+  try {
+    const prompt = await Promise.race([
+      returned.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+    expect(prompt).toBe(true);
+    expect(transport!.aborted).toBe(true);
+  } finally {
+    caller.abort();
+    await Promise.allSettled([next, returned]);
+  }
+});
 test("cleanup of an older canceled generator preserves cancellation of its successor", async () => {
   const signals: AbortSignal[] = [];
   const { runtime } = await setup(async (_url, init) => {

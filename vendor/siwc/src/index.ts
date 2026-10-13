@@ -188,6 +188,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
   const requests = new Map<string, Set<AbortController>>();
   let state: SessionState = { status: "disconnected", sharing: false };
   let pendingSignIn: AbortController | undefined;
+  let pendingSignInProfileId: string | undefined;
   let changingProfile = false;
   let epoch = 0;
   const snapshot = () => structuredClone(state);
@@ -452,6 +453,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
         );
       const controller = new AbortController();
       pendingSignIn = controller;
+      pendingSignInProfileId = options.profileId;
       const operation = ++epoch;
       const signals = [controller.signal, AbortSignal.timeout(10 * 60_000)];
       if (options.signal) signals.push(options.signal);
@@ -489,6 +491,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
             profile?.label ??
             pending?.label ??
             connectionLabel(saved, options.label);
+          pendingSignInProfileId = id;
           // Persist the runtime identity before any browser authorization, including cancelled attempts.
           const hostId = await store.getHostId();
           return {
@@ -645,7 +648,10 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
         }
         throw typed;
       } finally {
-        if (pendingSignIn === controller) pendingSignIn = undefined;
+        if (pendingSignIn === controller) {
+          pendingSignIn = undefined;
+          pendingSignInProfileId = undefined;
+        }
       }
     },
 
@@ -712,8 +718,6 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
           "A connection change is already in progress.",
         );
       changingProfile = true;
-      if (profileId) cancelRequests(profileId);
-      pendingSignIn?.abort();
       let revocationFailed = false;
       try {
         const saved = await store.withLock(async () => {
@@ -723,6 +727,8 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
             : selectedProfile(latest);
           if (profileId && !profile)
             throw new ChatGPTError("profile_not_found", "Account not found.");
+          if (profile && pendingSignInProfileId === profile.id)
+            pendingSignIn?.abort();
           if (profile) cancelRequests(profile.id);
           if (profile) {
             if (profile.credentials) {

@@ -147,6 +147,9 @@ export async function requestResponseStream(
           }
         },
         async return() {
+          // SDK async-generator return is queued behind an outstanding next().
+          // Abort first so a stalled SSE reader can finish that outstanding read.
+          close();
           try {
             await source.return?.();
             return { done: true as const, value: undefined };
