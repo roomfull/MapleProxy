@@ -321,7 +321,14 @@ export function Keys({
 }) {
   const [name, setName] = useState("");
   const base = `${location.origin}/v1`;
-  const example = `curl ${base}/responses \\\n  -H "Authorization: Bearer ${created?.secret ?? "YOUR_MAPLEPROXY_KEY"}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ model: model ?? "MODEL_ID", input: "你好" })}'`;
+  const example = [
+    "$secureKey = Read-Host 'MapleProxy 访问密钥' -AsSecureString",
+    "$credential = [System.Net.NetworkCredential]::new('', $secureKey)",
+    "$headers = @{ Authorization = 'Bearer ' + $credential.Password }",
+    `\$body = @{ model = '${(model ?? "MODEL_ID").replaceAll("'", "''")}'; input = '你好' } | ConvertTo-Json`,
+    `Invoke-RestMethod -Uri '${base}/responses' -Method Post -Headers $headers -ContentType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))`,
+    "Remove-Variable secureKey, credential, headers",
+  ].join("\n");
   return (
     <>
       <section className="panel">
@@ -418,14 +425,15 @@ export function Keys({
           <button onClick={() => onCopy(base)}>复制地址</button>
         </div>
         <div className="example-label">
-          <span>Responses 请求示例（POSIX shell）</span>
+          <span>Responses 请求示例（PowerShell 5.1 / 7）</span>
           <button className="quiet" onClick={() => onCopy(example)}>
             复制示例
           </button>
         </div>
         <pre>{example}</pre>
         <p className="caption">
-          Windows PowerShell 可使用 Invoke-RestMethod；请将 MODEL_ID
+          执行后在隐藏提示中输入访问密钥。密钥在 PowerShell
+          进程内部加入请求头，不会拼入命令行参数。请将 MODEL_ID
           替换为模型目录中的实际 ID。
         </p>
       </section>
