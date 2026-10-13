@@ -111,19 +111,17 @@ export function cleanClientRequest(
         tools(tool.tools, `${at}.tools`);
         continue;
       }
-      const nested =
-        format === "chat" && ["function", "custom"].includes(tool.type);
+      if (!["function", "custom"].includes(tool.type)) continue;
+      const nested = format === "chat";
       const spec = nested ? tool[tool.type] : tool;
       const specPath = nested ? `${at}.${tool.type}` : at;
       nulls(
         spec,
         [
           "description",
-          "parameters",
-          "strict",
-          "format",
           "defer_loading",
           "allowed_callers",
+          ...(tool.type === "function" ? ["parameters", "strict"] : ["format"]),
         ],
         specPath,
       );
@@ -134,22 +132,19 @@ export function cleanClientRequest(
     for (const [i, part] of value.entries()) {
       if (!record(part)) continue;
       const at = `${path}[${i}]`;
-      if (["input_image", "input_file", "output_text"].includes(part.type))
-        nulls(
-          part,
-          [
-            "detail",
-            "file_id",
-            "file_data",
-            "file_url",
-            "filename",
-            "logprobs",
-          ],
-          at,
-        );
-      if (part.type === "image_url")
+      if (format === "responses") {
+        if (part.type === "input_image") nulls(part, ["detail", "file_id"], at);
+        else if (part.type === "input_file")
+          nulls(
+            part,
+            ["detail", "file_id", "file_data", "file_url", "filename"],
+            at,
+          );
+        else if (part.type === "output_text") nulls(part, ["logprobs"], at);
+      }
+      if (format === "chat" && part.type === "image_url")
         nulls(part.image_url, ["detail"], `${at}.image_url`);
-      if (part.type === "file")
+      if (format === "chat" && part.type === "file")
         nulls(
           part.file,
           ["file_id", "file_data", "file_url", "filename"],
@@ -174,12 +169,14 @@ export function cleanClientRequest(
     "reasoning",
   );
   nulls(copied.text, ["format", "verbosity"], "text");
-  nulls(copied.text?.format, ["strict", "description"], "text.format");
-  nulls(
-    copied.response_format?.json_schema,
-    ["strict", "description"],
-    "response_format.json_schema",
-  );
+  if (copied.text?.format?.type === "json_schema")
+    nulls(copied.text.format, ["strict", "description"], "text.format");
+  if (format === "chat" && copied.response_format?.type === "json_schema")
+    nulls(
+      copied.response_format.json_schema,
+      ["strict", "description"],
+      "response_format.json_schema",
+    );
   nulls(
     copied.stream_options,
     ["include_usage", "include_obfuscation"],
@@ -208,11 +205,12 @@ export function cleanClientRequest(
             });
           }
         }
-        nulls(
-          item,
-          ["tool_calls", "refusal", "annotations", "function_call", "audio"],
-          path,
-        );
+        if (format === "chat")
+          nulls(
+            item,
+            ["tool_calls", "refusal", "annotations", "function_call", "audio"],
+            path,
+          );
         parts(item.content, `${path}.content`);
       } else if (item.type === "additional_tools")
         tools(item.tools, `${path}.tools`);
@@ -224,7 +222,11 @@ export function cleanClientRequest(
           "custom_tool_call_output",
         ].includes(item.type)
       ) {
-        nulls(item, ["namespace"], path);
+        if (
+          ["function_call", "custom_tool_call"].includes(item.type) ||
+          (item.type === "function_call_output" && item.call_id == null)
+        )
+          nulls(item, ["namespace"], path);
         parts(item.output, `${path}.output`);
       }
     }

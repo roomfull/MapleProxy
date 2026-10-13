@@ -7,6 +7,202 @@ const chat = {
 };
 
 describe("client request compatibility", () => {
+  it("preserves colliding native message and content extension nulls", () => {
+    const input = [
+      {
+        type: "message",
+        role: "assistant",
+        tool_calls: null,
+        refusal: null,
+        annotations: null,
+        function_call: null,
+        audio: null,
+        content: [
+          {
+            type: "output_text",
+            text: "prior",
+            annotations: [],
+            filename: null,
+            detail: null,
+            file_id: null,
+            file_data: null,
+            file_url: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_image",
+            image_url: "https://example.com/image.png",
+            detail: null,
+            file_id: null,
+            filename: null,
+            file_data: null,
+            file_url: null,
+            logprobs: null,
+          },
+          {
+            type: "input_file",
+            file_url: "https://example.com/file.txt",
+            detail: null,
+            file_id: null,
+            file_data: null,
+            filename: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: "done",
+        namespace: null,
+      },
+      {
+        type: "custom_tool_call_output",
+        call_id: "call_2",
+        output: "done",
+        namespace: null,
+      },
+    ];
+    const result = normalizeRequest({ model: "m", input }, "responses");
+    expect(result.body.input).toEqual([
+      {
+        type: "message",
+        role: "assistant",
+        tool_calls: null,
+        refusal: null,
+        annotations: null,
+        function_call: null,
+        audio: null,
+        content: [
+          {
+            type: "output_text",
+            text: "prior",
+            annotations: [],
+            filename: null,
+            detail: null,
+            file_id: null,
+            file_data: null,
+            file_url: null,
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_image",
+            image_url: "https://example.com/image.png",
+            filename: null,
+            file_data: null,
+            file_url: null,
+            logprobs: null,
+          },
+          {
+            type: "input_file",
+            file_url: "https://example.com/file.txt",
+            logprobs: null,
+          },
+        ],
+      },
+      input[2],
+      input[3],
+    ]);
+    expect(result.diagnostics.map((item) => item.path)).toEqual([
+      "input[0].content[0].logprobs",
+      "input[1].content[0].detail",
+      "input[1].content[0].file_id",
+      "input[1].content[1].detail",
+      "input[1].content[1].file_id",
+      "input[1].content[1].file_data",
+      "input[1].content[1].filename",
+    ]);
+    expect(input[0]!.tool_calls).toBeNull();
+  });
+
+  it("preserves colliding native tool and text format extension nulls", () => {
+    const result = normalizeRequest(
+      {
+        model: "m",
+        input: "x",
+        tools: [
+          {
+            type: "namespace",
+            name: "workspace",
+            description: "Tools",
+            tools: [
+              {
+                type: "function",
+                name: "read",
+                parameters: null,
+                strict: null,
+                description: null,
+                format: null,
+              },
+              {
+                type: "custom",
+                name: "patch",
+                format: null,
+                description: null,
+                parameters: null,
+                strict: null,
+              },
+            ],
+          },
+          {
+            type: "shell",
+            parameters: null,
+            strict: null,
+            format: null,
+            description: null,
+          },
+        ],
+        text: { format: { type: "text", strict: null, description: null } },
+      },
+      "responses",
+    );
+    expect(result.body.tools).toEqual([
+      {
+        type: "namespace",
+        name: "workspace",
+        description: "Tools",
+        tools: [
+          { type: "function", name: "read", format: null },
+          { type: "custom", name: "patch", parameters: null, strict: null },
+        ],
+      },
+      {
+        type: "shell",
+        parameters: null,
+        strict: null,
+        format: null,
+        description: null,
+      },
+    ]);
+    expect(result.body.text).toEqual({
+      format: { type: "text", strict: null, description: null },
+    });
+    expect(
+      normalizeRequest(
+        {
+          ...chat,
+          response_format: {
+            type: "text",
+            json_schema: { strict: null, description: null },
+          },
+        },
+        "chat",
+      ).body.text.format,
+    ).toEqual({
+      type: "text",
+      json_schema: { strict: null, description: null },
+    });
+  });
+
   it("omits an empty stop string as an ineffective optional value", () => {
     const result = normalizeRequest({ ...chat, stop: "" }, "chat");
     expect(result.ignoredParams).toEqual([]);
