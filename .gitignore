@@ -1,0 +1,12 @@
+node_modules/
+dist/
+web/dist/
+vendor/siwc/dist/
+data/
+.env
+.tmp/
+.superpowers/
+coverage/
+playwright-report/
+test-results/
+
