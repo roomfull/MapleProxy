@@ -19,4 +19,4 @@ for (const [path, entry] of Object.entries(lock.packages)) {
   notices += await readFile(join(root, path, license), "utf8");
   notices += "\n";
 }
-await writeFile(join(root, "THIRD_PARTY_NOTICES.md"), notices);
+await writeFile(join(root, "THIRD_PARTY_NOTICES.md"), notices.trimEnd() + "\n");
