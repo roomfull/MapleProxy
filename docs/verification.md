@@ -15,7 +15,11 @@
 
 回归新增 HTTP + ApiClient 验证上游 invalid_token/401 保留会话与 CSRF、后续管理操作可用；本地 admin_unauthorized 仍触发失效。两种非流式格式覆盖 failed/incomplete/EOF 与有效/无效/缺失 request ID，header/envelope/activity 一致。真实生产传输使用锁定 SDK 的 UTF-8/SSE decoder，3-byte 分片的显式 event:error 保留 code/message/param/sequence_number；经真实 loopback 双路由确认失败、无正常终止标记，安全 envelope 和日志不含 provider 私密消息。延迟取消用手动触发真实 deadline 回调，不等待五分钟；旧 promise 未结算前返回 409，结算后新 job 为 202。fixture 密码设置或 app 构建失败后，其自建 OS 临时目录均不存在。
 
-未新增浏览器、真实 OAuth 或真实远端推理验收；原浏览器限制和历史 Task 4 首次 integration GREEN 事实保留。审查意见原文保留于忽略的 SDD 工作区，修复仍等待独立 scoped re-review。
+未新增浏览器、真实 OAuth 或真实远端推理验收；原浏览器限制和历史 Task 4 首次 integration GREEN 事实保留。最终独立 scoped re-review 已确认提交 `bff7ae8` 中六项原发现全部解决，没有新增 Critical/Important 问题；以下保留非阻塞边界及控制器裁定。
+
+复审发现 Minor N1：若上游 SSE 包含损坏的 JSON，且底层 body cancellation 延迟结算，SDK decoder 的清理等待可能推迟错误返回，最终以总期限的 `request_timeout`/504 结束。受控内存探针在 `timeoutMs=80` 时约 83ms 返回；生产默认总期限为 180 秒。正常原生 `event:error` 经 renderer 处理会及时中止，未观察到错误成功、永久挂起或凭据泄漏。控制器将 N1 作为已知非阻塞限制保留：它需要损坏输入与延迟取消同时出现，有既有总期限约束，不影响已验证的正常错误/取消链路；本轮不再扩展修复范围。升级 SDK decoder 时须连同这条边界复验。
+
+最终审查、修复、复审已完成；原临时审查包按执行流程清理，本文件和 Git 历史保留交付结论与验证证据。
 
 ## 命令与结果
 
@@ -67,4 +71,4 @@
 - 真实 OAuth、远端权限、账户策略以及各模型对工具/多模态/高级字段的实际支持仍待用户自行授权后的 smoke；步骤见 [README](../README.md)。不使用自动测试调用真实 OpenAI。
 - Task 3 M1 的安全锁恢复已写入 README：先停止全部 server/setup 写入者，确认数据目录，仅删除遗留 `security.json.lock`，保留账户与 `security.json`。
 - Task 3 M2 的历史提前释放已在最终修复中解决：超时显示 sign_in_timeout，取消结算前保留 active，新启动返回 sign_in_busy。历史复现/审查记录保留；本页顶部记录新增回归。
-- 最终全分支审查及唯一修复轮已完成，独立 scoped re-review 和最终批准仍由控制器继续，本文不提前宣称审查通过。
+- 最终全分支审查、唯一修复轮及独立 scoped re-review 已完成；控制器接受上述有总期限约束的 Minor N1，保留真实授权验收和浏览器检查限制。
