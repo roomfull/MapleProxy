@@ -58,16 +58,26 @@ export async function startSmokeFixture(): Promise<{
         throw new AppError(409, "account_disabled", "测试账户已停用。");
       if (JSON.stringify(body.input).includes("fixture-failure"))
         throw new AppError(429, "rate_limit_exceeded", "隔离测试限流示例。");
+      const incomplete = JSON.stringify(body.input).includes(
+        "fixture-incomplete",
+      );
       return {
         profileId: account.id,
         status: 200,
-        headers: new Headers(),
+        headers: new Headers({
+          "x-request-id": incomplete
+            ? "upstream-fixture-incomplete"
+            : "upstream-fixture-success",
+        }),
         events: (async function* () {
           yield {
-            type: "response.completed",
+            type: incomplete ? "response.incomplete" : "response.completed",
             response: {
               id: "resp_fixture",
-              status: "completed",
+              status: incomplete ? "incomplete" : "completed",
+              ...(incomplete
+                ? { incomplete_details: { reason: "max_output_tokens" } }
+                : {}),
               model: "test-model",
               output: [
                 {
@@ -78,7 +88,9 @@ export async function startSmokeFixture(): Promise<{
                   content: [
                     {
                       type: "output_text",
-                      text: "本地隔离测试成功。",
+                      text: incomplete
+                        ? "本地隔离测试部分结果。"
+                        : "本地隔离测试成功。",
                       annotations: [],
                     },
                   ],
@@ -115,8 +127,26 @@ export async function startSmokeFixture(): Promise<{
     const seed = async () => {
       const key = await security.createKey("internal-smoke-seed");
       try {
-        for (const input of ["fixture-success", "fixture-failure"]) {
-          const response = await fetch(`${url}/v1/responses`, {
+        const cases = [
+          { path: "responses", body: { input: "fixture-success" } },
+          { path: "responses", body: { input: "fixture-failure" } },
+          { path: "responses", body: { input: "fixture-incomplete" } },
+          {
+            path: "chat/completions",
+            body: {
+              n: 2,
+              messages: [
+                {
+                  role: "user",
+                  content: "fixture-validation",
+                  startsNewUserRequest: true,
+                },
+              ],
+            },
+          },
+        ];
+        for (const entry of cases) {
+          const response = await fetch(`${url}/v1/${entry.path}`, {
             method: "POST",
             headers: {
               "content-type": "application/json",
@@ -124,7 +154,7 @@ export async function startSmokeFixture(): Promise<{
             },
             body: JSON.stringify({
               model: "test-model",
-              input,
+              ...entry.body,
               temperature: 0.5,
             }),
           });

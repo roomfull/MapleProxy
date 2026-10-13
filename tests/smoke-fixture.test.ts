@@ -59,8 +59,44 @@ it("starts an isolated browser fixture, seeds activity through HTTP, and closes 
     const rows = (await activity.json()).requests;
     expect(rows.map((r: { result: string }) => r.result).sort()).toEqual([
       "error",
+      "error",
+      "incomplete",
       "success",
     ]);
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        result: "error",
+        stage: "validation",
+        httpStatus: 400,
+        code: "unsupported_parameter",
+        param: "n",
+        upstreamCalled: false,
+        diagnostics: expect.arrayContaining([
+          {
+            path: "messages[0].startsNewUserRequest",
+            action: "filtered",
+            reason: "client_metadata",
+          },
+        ]),
+      }),
+    );
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        result: "incomplete",
+        responseStatus: "incomplete",
+        httpStatus: 200,
+        incompleteReason: "max_output_tokens",
+        upstreamCalled: true,
+        upstreamRequestId: "upstream-fixture-incomplete",
+      }),
+    );
+    for (const row of rows) {
+      expect(row.localRequestId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(row.requestId).toBe(row.upstreamRequestId ?? row.localRequestId);
+    }
+    expect(JSON.stringify(rows)).not.toMatch(
+      /"fixture-(success|failure|incomplete|validation)"/,
+    );
     expect(
       rows.some((r: { ignored: string[] }) =>
         r.ignored.includes("temperature"),
