@@ -10,8 +10,8 @@
     "build:vendor": "npm run build -w @siwc/local",
     "test": "npm run build:vendor && vitest run && node --test vendor/siwc/test/*.test.mjs",
     "test:unit": "vitest run",
-    "typecheck": "tsc --noEmit && npm run typecheck -w @siwc/local",
-    "build": "npm run build:vendor && tsc -p tsconfig.build.json && node scripts/build-assets.mjs",
+    "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json && npm run typecheck -w @siwc/local",
+    "build": "npm run build:vendor && tsc -p tsconfig.build.json && vite build --config web/vite.config.ts && node scripts/build-assets.mjs",
     "dev": "tsx watch src/server/main.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "start": "node dist/src/server/main.js",
@@ -19,13 +19,21 @@
     "notices:generate": "node scripts/runtime-notices.mjs"
   },
   "dependencies": {
-    "@siwc/local": "file:vendor/siwc"
+    "@fastify/static": "^10.1.6",
+    "@siwc/local": "file:vendor/siwc",
+    "fastify": "^5.12.7",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
     "prettier": "^3.8.3",
     "tsx": "^4.20.0",
     "typescript": "^5.8.3",
+    "vite": "^8.3.4",
     "vitest": "^5.0.4"
   },
   "engines": {
