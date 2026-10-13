@@ -202,6 +202,55 @@ it("bounds first-frame drain by the total deadline and classifies timeout as err
   }
 });
 
+it("keeps a terminal incomplete drain timeout as an HTTP 200 transport error", async () => {
+  let closed = false;
+  const f = await fixture(async function* () {
+    try {
+      yield {
+        type: "response.incomplete",
+        response: {
+          id: "r",
+          status: "incomplete",
+          output: [],
+          incomplete_details: { reason: "max_output_tokens" },
+        },
+      };
+    } finally {
+      closed = true;
+    }
+  }, 20000);
+  f.app.server.on("request", (_request, response) => {
+    const write = response.write.bind(response);
+    vi.spyOn(response, "write").mockImplementation(
+      (chunk: string | Uint8Array) => {
+        write(chunk);
+        return false;
+      },
+    );
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let connection: Awaited<ReturnType<typeof f.open>> | undefined;
+  try {
+    connection = await f.open("responses");
+    await eventually(() => connection!.body().includes("response.incomplete"));
+    await vi.advanceTimersByTimeAsync(20000);
+    await eventually(() => f.signal().aborted && closed && connection!.ended());
+    expect(connection.response.statusCode).toBe(200);
+    expect((await f.requests())[0]).toMatchObject({
+      result: "error",
+      code: "request_timeout",
+      stage: "transport",
+      httpStatus: 200,
+      responseStatus: "incomplete",
+      incompleteReason: "max_output_tokens",
+    });
+  } finally {
+    connection?.response.destroy();
+    vi.useRealTimers();
+    await f.close();
+  }
+});
+
 it("closes a socket still under backpressure at deadline without waiting for an error-frame drain", async () => {
   let returned = false;
   const f = await fixture(async function* () {

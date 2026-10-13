@@ -3,10 +3,16 @@ import staticFiles from "@fastify/static";
 import { randomUUID } from "node:crypto";
 import type { AccountRuntime } from "../auth/runtime.js";
 import { normalizeRequest } from "../protocol/normalize.js";
-import { collectResponse, renderStream } from "../protocol/events.js";
+import {
+  collectResponse,
+  renderStream,
+  type ResponseOutcome,
+} from "../protocol/events.js";
+import type { RequestDiagnostic } from "../protocol/types.js";
 import { AppError } from "../shared/errors.js";
+import { safeParam, safeDiagnostics } from "../shared/diagnostics.js";
 import { SecurityStore } from "./security.js";
-import { ActivityLog } from "./activity.js";
+import { ActivityLog, type Activity } from "./activity.js";
 import { registerAdmin, safeField } from "./routes.js";
 import { withSseHeartbeat, writeChunk } from "./streaming.js";
 
@@ -16,8 +22,15 @@ export interface AppOptions {
   webDir?: string;
   port?: number;
 }
-export function errorEnvelope(error: unknown, requestId: string) {
+export function errorEnvelope(
+  error: unknown,
+  requestId: string,
+  upstreamRequestId?: string,
+) {
   const known = error instanceof AppError;
+  const upstreamId =
+    (known ? safeField(error.requestId) : undefined) ??
+    safeField(upstreamRequestId);
   return {
     error: {
       message:
@@ -28,8 +41,10 @@ export function errorEnvelope(error: unknown, requestId: string) {
       code: known
         ? (safeField(error.code) ?? "request_failed")
         : "internal_error",
-      param: known ? (safeField(error.param) ?? null) : null,
-      request_id: known ? (safeField(error.requestId) ?? requestId) : requestId,
+      param: known ? (safeParam(error.param) ?? null) : null,
+      request_id: upstreamId ?? requestId,
+      local_request_id: requestId,
+      ...(upstreamId ? { upstream_request_id: upstreamId } : {}),
     },
   };
 }
@@ -65,6 +80,7 @@ export async function createApp({
       throw new AppError(403, "invalid_origin", "请求来源验证失败。");
     reply
       .header("x-request-id", request.id)
+      .header("x-mapleproxy-local-request-id", request.id)
       .header("x-content-type-options", "nosniff")
       .header("referrer-policy", "no-referrer");
     if (request.url.startsWith("/api/") || request.url.startsWith("/v1/"))
@@ -90,8 +106,14 @@ export async function createApp({
               )
             : error;
     const envelope = errorEnvelope(mapped, request.id);
+    if (envelope.error.upstream_request_id)
+      reply.header(
+        "x-mapleproxy-upstream-request-id",
+        envelope.error.upstream_request_id,
+      );
     reply
       .header("x-request-id", envelope.error.request_id)
+      .header("x-mapleproxy-local-request-id", request.id)
       .code(mapped instanceof AppError ? mapped.status : 500)
       .send(envelope);
   });
@@ -118,12 +140,42 @@ export async function createApp({
     app.post(path, { preHandler: keyAuth }, async (request, reply) => {
       const started = Date.now(),
         controller = new AbortController();
-      let model: string | undefined,
+      let model = safeField(
+          (request.body as { model?: unknown } | null)?.model,
+        ),
         profileId: string | undefined,
         ignored: string[] = [],
         requestId = request.id,
-        result: "success" | "error" | "cancelled" = "error",
+        result: Activity["result"] = "error",
         code: string | undefined;
+      let upstreamRequestId: string | undefined,
+        stage: Activity["stage"] = "validation",
+        httpStatus = 500,
+        param: string | undefined,
+        upstreamCalled = false,
+        diagnostics: RequestDiagnostic[] = [],
+        outcome: ResponseOutcome | undefined;
+      const recordError = (error: unknown, fallback: string) => {
+        code = error instanceof AppError ? safeField(error.code) : fallback;
+        param = error instanceof AppError ? safeParam(error.param) : undefined;
+        if (error instanceof AppError) {
+          if (error.diagnostics)
+            diagnostics = safeDiagnostics([
+              ...diagnostics,
+              ...error.diagnostics,
+            ]);
+          upstreamRequestId = safeField(error.requestId) ?? upstreamRequestId;
+          requestId = upstreamRequestId ?? request.id;
+        }
+        ignored = [
+          ...new Set([
+            ...ignored,
+            ...diagnostics
+              .filter((entry) => entry.reason === "siwc_ignored_parameter")
+              .map((entry) => entry.path),
+          ]),
+        ];
+      };
       let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
       const close = () => {
         if (!reply.raw.writableEnded) controller.abort();
@@ -134,16 +186,28 @@ export async function createApp({
         const normalized = normalizeRequest(request.body, format);
         model = safeField(normalized.body.model);
         ignored = normalized.ignoredParams;
+        diagnostics = normalized.diagnostics;
+        const renderOptions = {
+          ...normalized.renderOptions,
+          onTerminal: (value: ResponseOutcome) => {
+            outcome = value;
+          },
+        };
         if (ignored.length)
           reply.header("x-mapleproxy-ignored-params", ignored.join(","));
+        stage = "upstream";
+        upstreamCalled = true;
         const upstream = await runtime.requestResponses({
           body: normalized.body,
           signal: controller.signal,
         });
         profileId = safeField(upstream.profileId);
-        requestId =
-          safeField(upstream.headers.get("x-request-id")) ?? requestId;
+        upstreamRequestId = safeField(upstream.headers.get("x-request-id"));
+        requestId = upstreamRequestId ?? request.id;
         reply.header("x-request-id", requestId);
+        if (upstreamRequestId)
+          reply.header("x-mapleproxy-upstream-request-id", upstreamRequestId);
+        stage = "response";
         if (upstream.deadlineAt !== undefined) {
           const expire = () =>
             controller.abort(
@@ -158,13 +222,16 @@ export async function createApp({
           else deadlineTimer = setTimeout(expire, remaining);
         }
         if (!normalized.stream) {
+          controller.signal.throwIfAborted();
           const response = await collectResponse(
             upstream.events,
             format,
             normalized.body.model,
-            normalized.renderOptions,
+            renderOptions,
           );
-          result = "success";
+          controller.signal.throwIfAborted();
+          result = outcome?.status === "incomplete" ? "incomplete" : "success";
+          httpStatus = 200;
           return reply.send(response);
         }
         const stream = withSseHeartbeat(
@@ -172,13 +239,14 @@ export async function createApp({
             upstream.events,
             format,
             normalized.body.model,
-            normalized.renderOptions,
+            renderOptions,
           ),
           controller.signal,
         );
         // Read and validate the first output before committing HTTP 200.
         const first = await stream.next();
         reply.hijack();
+        httpStatus = 200;
         reply.raw.writeHead(200, {
           ...reply.getHeaders(),
           "content-type": "text/event-stream; charset=utf-8",
@@ -186,19 +254,25 @@ export async function createApp({
           connection: "keep-alive",
         } as import("node:http").OutgoingHttpHeaders);
         try {
-          if (!first.done)
+          if (!first.done) {
+            stage = "transport";
             await writeChunk(reply.raw, first.value, controller.signal);
-          for await (const chunk of stream)
-            await writeChunk(reply.raw, chunk, controller.signal);
-          result = "success";
+          }
+          while (true) {
+            stage = "response";
+            const next = await stream.next();
+            if (next.done) break;
+            stage = "transport";
+            await writeChunk(reply.raw, next.value, controller.signal);
+          }
+          result = outcome?.status === "incomplete" ? "incomplete" : "success";
         } catch (caught) {
           const error =
             controller.signal.reason instanceof AppError
               ? controller.signal.reason
               : caught;
-          code =
-            error instanceof AppError ? safeField(error.code) : "stream_failed";
-          const frame = `event: error\ndata: ${JSON.stringify(errorEnvelope(error, requestId))}\n\n`;
+          recordError(error, "stream_failed");
+          const frame = `event: error\ndata: ${JSON.stringify(errorEnvelope(error, request.id, upstreamRequestId))}\n\n`;
           if (
             controller.signal.aborted &&
             code === "request_timeout" &&
@@ -221,17 +295,18 @@ export async function createApp({
           controller.signal.reason instanceof AppError
             ? controller.signal.reason
             : caught;
-        code =
-          error instanceof AppError ? safeField(error.code) : "internal_error";
+        recordError(error, "internal_error");
+        httpStatus = error instanceof AppError ? error.status : 500;
         if (error instanceof AppError) {
-          requestId = safeField(error.requestId) ?? requestId;
-          throw new AppError(
+          const mapped = new AppError(
             error.status,
             error.code,
             error.message,
             error.param,
-            requestId,
+            upstreamRequestId,
           );
+          mapped.diagnostics = diagnostics;
+          throw mapped;
         }
         throw error;
       } finally {
@@ -257,6 +332,15 @@ export async function createApp({
           result,
           code,
           ignored,
+          localRequestId: request.id,
+          upstreamRequestId,
+          stage,
+          httpStatus,
+          param,
+          upstreamCalled,
+          diagnostics,
+          responseStatus: outcome?.status,
+          incompleteReason: outcome?.incompleteReason,
         });
       }
     });

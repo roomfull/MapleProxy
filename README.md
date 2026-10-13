@@ -93,6 +93,16 @@ try {
 
 curl 输出的 `event: error` 表示流失败；HTTP 200 仅代表流开始成功。Chat 只有成功完成后才发送 `[DONE]`；Responses 要确认 `response.completed`。部分输出不能当作完整成功结果。
 
+## 请求诊断
+
+管理页面的最近请求提供展开诊断：安全模型 ID、阶段（`validation` 请求校验 / `upstream` 上游调用流程 / `response` 响应读取与转换 / `transport` 流写入）、实际 HTTP 状态、错误代码、完整数组参数路径、被过滤或转换的字段，以及本地和上游请求 ID。`upstreamCalled` 表示进入 `runtime.requestResponses`；账号或认证检查仍可能在实际网络发送前失败。校验失败时也保留已收集的字段诊断。
+
+`requestId`、`X-Request-Id` 和错误的 `request_id` 保持兼容：有安全上游 ID 时使用它，否则使用本地 ID。`X-MapleProxy-Local-Request-Id` 始终标识本地请求；可用时 `X-MapleProxy-Upstream-Request-Id` 标识上游请求。错误 JSON 同时提供 `local_request_id` 和可选的 `upstream_request_id`。[官方 SDK 的请求 ID 约定](https://github.com/openai/openai-node/blob/main/docs/configuration.md#request-ids-and-raw-responses)
+
+有效的 `response.incomplete` 记录为“未完整完成”，原因只保存 `max_output_tokens`、`content_filter` 或 `unknown`。已知 Chat 未完成原因映射为 `length` / `content_filter`；未知原因无法表示时仍返回错误。HTTP 200 表示流已经开始，后续超时、转换或传输失败继续记为失败，已有终止状态不会覆盖错误。[官方 Responses 类型](https://github.com/openai/openai-node/blob/main/src/resources/responses/responses.ts)
+
+活动记录最多 200 条，仅保存在内存；每条最多 100 项字段诊断，路径最多 512 字符，任意客户端键名片段最多 64 字符。过长或不安全的路径不保留。字段记录只包含路径、动作和固定原因，不保存字段值、提示词、输出、工具参数值、错误消息或凭据。旧活动记录缺少新增字段时，页面仍可显示。
+
 ## 数据和恢复
 
 `data/security.json` 保存管理密码的 scrypt 盐/哈希及访问密钥摘要；`chatgpt-auth.json` 保存用 Windows DPAPI CurrentUser 加密的账户凭据；`chatgpt-host.json` 保存主机标识。管理会话和最近 200 条请求元数据只存在内存，重启会清空。活动记录不保存 prompt、输出或 token。

@@ -2,6 +2,7 @@ import type { JsonObject } from "../auth/runtime.js";
 import type { RenderStreamOptions } from "./events.js";
 import { isDeepStrictEqual } from "node:util";
 import { AppError } from "../shared/errors.js";
+import { DiagnosticList } from "../shared/diagnostics.js";
 import { cleanClientRequest } from "./client-cleanup.js";
 import {
   clientTools,
@@ -559,7 +560,7 @@ export function normalizeRequest(
   diagnostics: RequestDiagnostic[];
   responseContext: ResponseContext;
 } {
-  const diagnostics: RequestDiagnostic[] = [];
+  const diagnostics: RequestDiagnostic[] = new DiagnosticList();
   try {
     return normalize(input, format, diagnostics);
   } catch (error) {

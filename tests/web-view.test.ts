@@ -1,8 +1,63 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Keys } from "../web/src/panels.js";
+import { Keys, ActivityPanel } from "../web/src/panels.js";
 afterEach(() => vi.unstubAllGlobals());
+it("renders diagnostic details and incomplete outcomes alongside older activity entries", () => {
+  const html = renderToStaticMarkup(
+    createElement(ActivityPanel, {
+      resource: {
+        loading: false,
+        data: [
+          {
+            requestId: "upstream-id",
+            localRequestId: "local-id",
+            upstreamRequestId: "upstream-id",
+            model: "synthetic",
+            format: "chat",
+            time: "2026-10-14T00:00:00Z",
+            durationMs: 1,
+            result: "incomplete",
+            ignored: [],
+            stage: "response",
+            httpStatus: 200,
+            upstreamCalled: true,
+            incompleteReason: "max_output_tokens",
+            diagnostics: [
+              {
+                path: "messages[2].reasoning_content",
+                action: "filtered",
+                reason: "client_metadata",
+              },
+            ],
+          },
+          {
+            requestId: "old-id",
+            format: "responses",
+            time: "2026-10-14T00:00:00Z",
+            durationMs: 1,
+            result: "error",
+            ignored: [],
+          },
+        ],
+      },
+    }),
+  );
+  for (const text of [
+    "未完整完成",
+    "local-id",
+    "upstream-id",
+    "response",
+    "200",
+    "max_output_tokens",
+    "messages[2].reasoning_content",
+    "client_metadata",
+    "filtered",
+    "old-id",
+    "进入上游调用流程",
+  ])
+    expect(html).toContain(text);
+});
 it("renders a PowerShell example that reads credentials inside the process", () => {
   vi.stubGlobal("location", { origin: "http://127.0.0.1:8317" });
   const html = renderToStaticMarkup(

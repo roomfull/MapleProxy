@@ -426,8 +426,8 @@ export async function* renderStream(
   let emitted = false;
   try {
     for await (const event of events) {
-      reportTerminal(event, options);
       const error = terminalError(event);
+      if (!error) reportTerminal(event, options);
       if (error && !emitted) throw error;
       if (format === "responses") {
         emitted = true;
@@ -459,8 +459,8 @@ export async function collectResponse(
 ): Promise<JsonObject> {
   try {
     for await (const event of events) {
-      reportTerminal(event, options);
       const error = terminalError(event);
+      if (!error) reportTerminal(event, options);
       if (error) throw error;
       if (terminal(event))
         return format === "responses"

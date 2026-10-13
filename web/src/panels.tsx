@@ -454,7 +454,7 @@ export function ActivityPanel({ resource }: { resource: Resource<Activity> }) {
   const rows = resource.data.filter(
     (row) =>
       (filter === "all" || row.result === filter) &&
-      `${row.requestId} ${row.model ?? ""} ${row.profileId ?? ""} ${row.code ?? ""}`
+      `${row.requestId} ${row.localRequestId ?? ""} ${row.upstreamRequestId ?? ""} ${row.model ?? ""} ${row.profileId ?? ""} ${row.code ?? ""} ${row.param ?? ""}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
@@ -464,7 +464,7 @@ export function ActivityPanel({ resource }: { resource: Resource<Activity> }) {
         <div className="panel-header">
           <div>
             <h2>最近请求</h2>
-            <p>只记录账号、模型、耗时和结果，不保存提示词、输出或凭证。</p>
+            <p>只记录有限诊断元数据，不保存提示词、输出、工具参数值或凭证。</p>
           </div>
           <span className="count">{resource.data.length} / 200</span>
         </div>
@@ -488,6 +488,7 @@ export function ActivityPanel({ resource }: { resource: Resource<Activity> }) {
           >
             <option value="all">全部结果</option>
             <option value="success">成功</option>
+            <option value="incomplete">未完整完成</option>
             <option value="error">失败</option>
             <option value="cancelled">已取消</option>
           </select>
@@ -510,7 +511,7 @@ export function ActivityPanel({ resource }: { resource: Resource<Activity> }) {
                   <th>接口</th>
                   <th>耗时</th>
                   <th>结果</th>
-                  <th>忽略参数</th>
+                  <th>诊断详情</th>
                 </tr>
               </thead>
               <tbody>
@@ -532,15 +533,63 @@ export function ActivityPanel({ resource }: { resource: Resource<Activity> }) {
                       >
                         {row.result === "success"
                           ? "成功"
-                          : row.result === "error"
-                            ? "失败"
-                            : "已取消"}
+                          : row.result === "incomplete"
+                            ? "未完整完成"
+                            : row.result === "error"
+                              ? "失败"
+                              : "已取消"}
                       </span>
                       {row.code && (
                         <code className="subline error-text">{row.code}</code>
                       )}
                     </td>
-                    <td className="ignored">{row.ignored.join(", ") || "—"}</td>
+                    <td className="ignored">
+                      <details>
+                        <summary>
+                          {row.stage ?? "诊断"}
+                          {row.httpStatus !== undefined
+                            ? ` · HTTP ${row.httpStatus}`
+                            : ""}
+                        </summary>
+                        <div>
+                          本地 ID：
+                          <code>{row.localRequestId ?? row.requestId}</code>
+                        </div>
+                        {row.upstreamRequestId && (
+                          <div>
+                            上游 ID：<code>{row.upstreamRequestId}</code>
+                          </div>
+                        )}
+                        {row.upstreamCalled !== undefined && (
+                          <div>
+                            进入上游调用流程：
+                            {row.upstreamCalled
+                              ? "是（可能在账号或认证检查阶段失败）"
+                              : "否"}
+                          </div>
+                        )}
+                        {row.param && (
+                          <div>
+                            错误路径：<code>{row.param}</code>
+                          </div>
+                        )}
+                        {row.responseStatus && (
+                          <div>响应终止：{row.responseStatus}</div>
+                        )}
+                        {row.incompleteReason && (
+                          <div>未完成原因：{row.incompleteReason}</div>
+                        )}
+                        {!!row.ignored?.length && (
+                          <div>忽略参数：{row.ignored.join(", ")}</div>
+                        )}
+                        {row.diagnostics?.map((entry, i) => (
+                          <div key={i}>
+                            <code>{entry.path}</code> · {entry.action} ·{" "}
+                            {entry.reason}
+                          </div>
+                        ))}
+                      </details>
+                    </td>
                   </tr>
                 ))}
               </tbody>

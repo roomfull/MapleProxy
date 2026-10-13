@@ -98,6 +98,22 @@ afterEach(async () => {
 const admin = () => ({ host, origin, cookie, "x-csrf-token": csrf });
 const inference = () => ({ host, authorization: `Bearer ${secret}` });
 describe("HTTP isolation and local origin protections", () => {
+  it("identifies local requests even when the Host guard rejects before normal headers", async () => {
+    const response = await app.inject({
+      url: "/v1/models",
+      headers: { host: "evil.invalid:8317" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.headers["x-mapleproxy-local-request-id"]).toBe(
+      response.json().error.local_request_id,
+    );
+    expect(response.headers["x-mapleproxy-local-request-id"]).toMatch(
+      /^[a-f0-9-]{36}$/,
+    );
+    expect(
+      response.headers["x-mapleproxy-upstream-request-id"],
+    ).toBeUndefined();
+  });
   it("distinguishes upstream catalog 401 from real management expiry through HTTP and ApiClient", async () => {
     const requests: RequestInit[] = [];
     const client = new ApiClient(async (url, init) => {
@@ -390,6 +406,234 @@ describe("HTTP isolation and local origin protections", () => {
   });
 });
 describe("inference rendering and privacy", () => {
+  it("records safe model, validation phase and prior cleanup when rejecting before runtime", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: inference(),
+      payload: {
+        model: "synthetic",
+        temperature: 0.5,
+        messages: [
+          { role: "user", content: "private prompt" },
+          { role: "assistant", content: "private reply" },
+          {
+            role: "user",
+            content: "private prompt",
+            reasoning_content: "private reasoning",
+            audio: "private audio",
+          },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.param).toBe("messages[2].audio");
+    expect(calls).toHaveLength(0);
+    const log = await app.inject({
+      url: "/api/admin/requests",
+      headers: admin(),
+    });
+    expect(log.json().requests[0]).toMatchObject({
+      model: "synthetic",
+      result: "error",
+      stage: "validation",
+      httpStatus: 400,
+      param: "messages[2].audio",
+      upstreamCalled: false,
+      localRequestId: response.headers["x-mapleproxy-local-request-id"],
+      requestId: response.headers["x-request-id"],
+      diagnostics: expect.arrayContaining([
+        {
+          path: "messages[2].reasoning_content",
+          action: "filtered",
+          reason: "client_metadata",
+        },
+      ]),
+      ignored: ["temperature"],
+    });
+    expect(log.body).not.toContain("private");
+    expect(log.body).not.toContain(secret);
+    expect(response.json().error.local_request_id).toBe(
+      response.headers["x-mapleproxy-local-request-id"],
+    );
+    expect(
+      response.headers["x-mapleproxy-upstream-request-id"],
+    ).toBeUndefined();
+  });
+  it("drops unsafe pre-validation model values", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: inference(),
+      payload: {
+        model: "private unsafe model",
+        store: true,
+        input: "private prompt",
+      },
+    });
+    const log = await app.inject({
+      url: "/api/admin/requests",
+      headers: admin(),
+    });
+    expect(log.json().requests[0].model).toBeUndefined();
+    expect(log.body).not.toContain("private");
+    expect(calls).toHaveLength(0);
+  });
+  it("keeps separate local and upstream IDs and cleanup on runtime errors", async () => {
+    failure = new AppError(
+      429,
+      "rate_limit_exceeded",
+      "private credentials",
+      "tools[1].name",
+      "synthetic-429",
+    );
+    (failure as AppError).diagnostics = [];
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: inference(),
+      payload: {
+        model: "synthetic",
+        input: "private prompt",
+        temperature: 0.5,
+      },
+    });
+    const local = response.headers["x-mapleproxy-local-request-id"];
+    expect(local).toMatch(/^[a-f0-9-]{36}$/);
+    expect(response.headers["x-mapleproxy-upstream-request-id"]).toBe(
+      "synthetic-429",
+    );
+    expect(response.headers["x-request-id"]).toBe("synthetic-429");
+    expect(response.json().error).toMatchObject({
+      local_request_id: local,
+      upstream_request_id: "synthetic-429",
+      param: "tools[1].name",
+    });
+    const log = await app.inject({
+      url: "/api/admin/requests",
+      headers: admin(),
+    });
+    expect(log.json().requests[0]).toMatchObject({
+      localRequestId: local,
+      upstreamRequestId: "synthetic-429",
+      upstreamCalled: true,
+      stage: "upstream",
+      httpStatus: 429,
+      diagnostics: [
+        {
+          path: "temperature",
+          action: "filtered",
+          reason: "siwc_ignored_parameter",
+        },
+      ],
+    });
+    expect(log.body).not.toContain("private");
+  });
+  it("keeps an expired nonstream deadline an error even if a terminal fixture resolves", async () => {
+    const mock = vi.spyOn(runtime, "requestResponses").mockResolvedValue({
+      profileId: "a",
+      status: 200,
+      deadlineAt: Date.now() - 1,
+      headers: new Headers({ "x-request-id": "synthetic-expired" }),
+      events: (async function* () {
+        yield {
+          type: "response.incomplete",
+          response: {
+            id: "r",
+            status: "incomplete",
+            output: [],
+            incomplete_details: { reason: "max_output_tokens" },
+          },
+        };
+      })(),
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/responses",
+        headers: inference(),
+        payload: { model: "synthetic", input: "x", stream: false },
+      });
+      expect(response.statusCode).toBe(504);
+      const log = await app.inject({
+        url: "/api/admin/requests",
+        headers: admin(),
+      });
+      expect(log.json().requests[0]).toMatchObject({
+        result: "error",
+        code: "request_timeout",
+        httpStatus: 504,
+        stage: "response",
+      });
+    } finally {
+      mock.mockRestore();
+    }
+  });
+  it.each(["responses", "chat"] as const)(
+    "records incomplete %s for streaming and collected outputs while errors dominate",
+    async (format) => {
+      for (const stream of [false, true])
+        for (const reason of [
+          "max_output_tokens",
+          "content_filter",
+          "private unknown reason",
+        ]) {
+          const mock = vi.spyOn(runtime, "requestResponses").mockResolvedValue({
+            profileId: "a",
+            status: 200,
+            headers: new Headers({ "x-request-id": "synthetic-incomplete" }),
+            events: (async function* () {
+              yield {
+                type: "response.incomplete",
+                response: {
+                  id: "r",
+                  status: "incomplete",
+                  output: [],
+                  incomplete_details: { reason },
+                },
+              };
+            })(),
+          });
+          try {
+            const response = await app.inject({
+              method: "POST",
+              url: format === "chat" ? "/v1/chat/completions" : "/v1/responses",
+              headers: inference(),
+              payload: {
+                model: "synthetic",
+                stream,
+                ...(format === "chat"
+                  ? { messages: [{ role: "user", content: "private prompt" }] }
+                  : { input: "private prompt" }),
+              },
+            });
+            const isError =
+              format === "chat" && reason === "private unknown reason";
+            expect(response.statusCode).toBe(isError ? 502 : 200);
+            const log = await app.inject({
+              url: "/api/admin/requests",
+              headers: admin(),
+            });
+            expect(log.json().requests[0]).toMatchObject({
+              result: isError ? "error" : "incomplete",
+              responseStatus: "incomplete",
+              incompleteReason: reason.startsWith("private")
+                ? "unknown"
+                : reason,
+              stage: "response",
+              httpStatus: isError ? 502 : 200,
+              upstreamCalled: true,
+              upstreamRequestId: "synthetic-incomplete",
+            });
+            if (isError)
+              expect(log.json().requests[0].code).toBe("response_incomplete");
+            expect(log.body).not.toContain("private");
+          } finally {
+            mock.mockRestore();
+          }
+        }
+    },
+  );
   it.each(["responses", "chat"] as const)(
     "passes future model options to captured %s upstream body",
     async (format) => {

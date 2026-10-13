@@ -287,3 +287,25 @@ it.each(["response.failed", "error"])(
     await expect(iterator.next()).rejects.toMatchObject({ status: 502 });
   },
 );
+
+it.each(["response.completed", "response.incomplete"])(
+  "does not report a mismatched %s terminal status",
+  async (type) => {
+    const seen: unknown[] = [];
+    const value = {
+      type,
+      response: {
+        ...finalResponse([message]),
+        status: type === "response.completed" ? "incomplete" : "completed",
+      },
+    };
+    const options = { onTerminal: (outcome: unknown) => seen.push(outcome) };
+    await expect(
+      collectResponse(events(value), "responses", "m", options),
+    ).rejects.toMatchObject({ code: "response_incomplete" });
+    await expect(
+      frames(renderStream(events(value), "responses", "m", options)),
+    ).rejects.toMatchObject({ code: "response_incomplete" });
+    expect(seen).toEqual([]);
+  },
+);

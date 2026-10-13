@@ -28,6 +28,19 @@ export interface Activity {
   result: string;
   code?: string;
   ignored: string[];
+  localRequestId?: string;
+  upstreamRequestId?: string;
+  stage?: "validation" | "upstream" | "response" | "transport";
+  httpStatus?: number;
+  param?: string;
+  upstreamCalled?: boolean;
+  diagnostics?: Array<{
+    path: string;
+    action: "filtered" | "normalized";
+    reason: string;
+  }>;
+  responseStatus?: "completed" | "incomplete";
+  incompleteReason?: "max_output_tokens" | "content_filter" | "unknown";
 }
 export interface Job {
   id: string;
