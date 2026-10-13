@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import type { AccountRuntime, JsonObject } from "../src/auth/runtime.js";
 import { AppError } from "../src/shared/errors.js";
 import { SecurityStore } from "../src/server/security.js";
 import { createApp } from "../src/server/app.js";
+import { ApiClient } from "../web/src/api.js";
 
 const host = "localhost:8317",
   origin = "http://localhost:8317";
@@ -97,6 +98,101 @@ afterEach(async () => {
 const admin = () => ({ host, origin, cookie, "x-csrf-token": csrf });
 const inference = () => ({ host, authorization: `Bearer ${secret}` });
 describe("HTTP isolation and local origin protections", () => {
+  it("distinguishes upstream catalog 401 from real management expiry through HTTP and ApiClient", async () => {
+    const requests: RequestInit[] = [];
+    const client = new ApiClient(async (url, init) => {
+      requests.push(init);
+      const headers = Object.fromEntries(new Headers(init.headers));
+      const response = await app.inject({
+        method: init.method as "GET" | "POST",
+        url,
+        headers: {
+          ...admin(),
+          ...headers,
+          "x-csrf-token": headers["x-csrf-token"] ?? "",
+        },
+        ...(init.body ? { payload: String(init.body) } : {}),
+      });
+      return new Response(response.body, { status: response.statusCode });
+    });
+    client.onExpired = vi.fn();
+    await client.session();
+    const upstream = vi
+      .spyOn(runtime, "listModels")
+      .mockRejectedValue(
+        new AppError(
+          401,
+          "invalid_token",
+          "Upstream rejected the selected connection.",
+        ),
+      );
+    try {
+      await expect(client.request("/models")).rejects.toThrow(
+        "Upstream rejected",
+      );
+      expect(client.onExpired).not.toHaveBeenCalled();
+      await expect(
+        client.request("/accounts/a/disconnect", "POST"),
+      ).resolves.toEqual({ ok: true });
+      expect(new Headers(requests.at(-1)!.headers).get("x-csrf-token")).toBe(
+        csrf,
+      );
+      await client.logout();
+      await expect(client.request("/models")).rejects.toThrow("请先登录");
+      expect(client.onExpired).toHaveBeenCalledOnce();
+      await expect(
+        client.request("/accounts/a/default", "POST"),
+      ).rejects.toThrow();
+      expect(new Headers(requests.at(-1)!.headers).has("x-csrf-token")).toBe(
+        false,
+      );
+    } finally {
+      upstream.mockRestore();
+    }
+  });
+  it("keeps a timed-out sign-in reserved until asynchronous cancellation settles", async () => {
+    let timeout!: () => void;
+    const realSetTimeout = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: () => void,
+      delay: number,
+      ...args: any[]
+    ) => {
+      if (delay === 5 * 60_000) timeout = callback;
+      return realSetTimeout(callback, delay, ...args);
+    }) as typeof setTimeout);
+    const cancel = vi
+      .spyOn(runtime, "cancelSignIn")
+      .mockImplementation(() => {});
+    try {
+      const start = () =>
+        app.inject({
+          method: "POST",
+          url: "/api/admin/sign-in",
+          headers: admin(),
+          payload: {},
+        });
+      const first = await start();
+      timeout();
+      const status = await app.inject({
+        url: `/api/admin/sign-in/${first.json().id}`,
+        headers: admin(),
+      });
+      expect(status.json()).toMatchObject({
+        status: "failed",
+        code: "sign_in_timeout",
+      });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect((await start()).statusCode).toBe(409);
+      signInResolve!();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect((await start()).statusCode).toBe(202);
+      signInResolve!();
+    } finally {
+      timer.mockRestore();
+      cancel.mockRestore();
+    }
+  });
   it("requires API keys independently of management sessions", async () => {
     expect(
       (await app.inject({ url: "/v1/models", headers: { host } })).statusCode,
@@ -294,6 +390,95 @@ describe("HTTP isolation and local origin protections", () => {
   });
 });
 describe("inference rendering and privacy", () => {
+  it.each(["responses", "chat"] as const)(
+    "passes future model options to captured %s upstream body",
+    async (format) => {
+      const response = await app.inject({
+        method: "POST",
+        url: format === "responses" ? "/v1/responses" : "/v1/chat/completions",
+        headers: inference(),
+        payload: {
+          model: "synthetic",
+          future_model_option: { level: 2 },
+          future_scalar: "future",
+          temperature: 0.5,
+          stream: false,
+          ...(format === "responses"
+            ? { input: "x", reasoning: { effort: "future" } }
+            : {
+                messages: [{ role: "user", content: "x" }],
+                reasoning_effort: "future",
+              }),
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(calls.at(-1)).toMatchObject({
+        future_model_option: { level: 2 },
+        future_scalar: "future",
+        reasoning: { effort: "future" },
+        store: false,
+        stream: true,
+      });
+      expect(calls.at(-1)).not.toHaveProperty("temperature");
+      expect(response.headers["x-mapleproxy-ignored-params"]).toBe(
+        "temperature",
+      );
+    },
+  );
+  it.each(["responses", "chat"] as const)(
+    "keeps effective request IDs for nonstream %s terminal failures",
+    async (format) => {
+      const route =
+        format === "chat" ? "/v1/chat/completions" : "/v1/responses";
+      const input =
+        format === "chat"
+          ? { messages: [{ role: "user", content: "x" }] }
+          : { input: "x" };
+      for (const id of ["upstream-synthetic-id", "unsafe id", undefined]) {
+        for (const terminal of [
+          "response.failed",
+          "response.incomplete",
+          "eof",
+        ]) {
+          const mock = vi.spyOn(runtime, "requestResponses").mockResolvedValue({
+            profileId: "a",
+            status: 200,
+            headers: new Headers(id ? { "x-request-id": id } : {}),
+            events: (async function* () {
+              if (terminal !== "eof")
+                yield {
+                  type: terminal,
+                  response: {
+                    status: terminal.slice(9),
+                    error: { code: "synthetic_failure" },
+                  },
+                };
+            })(),
+          });
+          try {
+            const response = await app.inject({
+              method: "POST",
+              url: route,
+              headers: inference(),
+              payload: { model: "synthetic", ...input },
+            });
+            expect(response.statusCode).toBe(502);
+            const effective = response.headers["x-request-id"];
+            expect(response.json().error.request_id).toBe(effective);
+            if (id === "upstream-synthetic-id") expect(effective).toBe(id);
+            else expect(effective).toMatch(/^[a-f0-9-]{36}$/);
+            const log = await app.inject({
+              url: "/api/admin/requests",
+              headers: admin(),
+            });
+            expect(log.json().requests[0].requestId).toBe(effective);
+          } finally {
+            mock.mockRestore();
+          }
+        }
+      }
+    },
+  );
   it("passes usage rendering options without forwarding metadata upstream", async () => {
     for (const includeUsage of [false, true]) {
       const response = await app.inject({

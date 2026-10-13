@@ -38,6 +38,66 @@ function chunks(values: string[]) {
 }
 
 describe("request normalization", () => {
+  it.each(["responses", "chat"] as const)(
+    "leaves unknown model options to upstream on %s safely",
+    (format) => {
+      const source = JSON.parse(
+        '{"model":"synthetic","future_scalar":17,"future_model_option":{"level":2},"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}},"temperature":0.5,"stream":false}',
+      );
+      Object.assign(
+        source,
+        format === "chat"
+          ? {
+              messages: [{ role: "user", content: "x" }],
+              reasoning_effort: "future-effort",
+            }
+          : { input: "x", reasoning: { effort: "future-effort" } },
+      );
+      const result = normalizeRequest(source, format);
+      expect(result.body).toMatchObject({
+        future_scalar: 17,
+        future_model_option: { level: 2 },
+        reasoning: { effort: "future-effort" },
+        stream: true,
+        store: false,
+      });
+      expect(Object.getPrototypeOf(result.body)).toBe(Object.prototype);
+      expect(Object.hasOwn(result.body, "__proto__")).toBe(true);
+      expect(result.body.__proto__).toEqual({ polluted: true });
+      expect(result.body.polluted).toBeUndefined();
+      expect(result.ignoredParams).toEqual(["temperature"]);
+      expect(result.stream).toBe(false);
+      for (const [param, value] of Object.entries({
+        previous_response_id: "prior",
+        store: true,
+        audio: { voice: "x" },
+      }))
+        expect(() =>
+          normalizeRequest({ ...source, [param]: value }, format),
+        ).toThrowError(
+          expect.objectContaining({ code: "unsupported_parameter", param }),
+        );
+      expect(() =>
+        normalizeRequest(
+          { ...source, tools: [{ type: "image_generation" }] },
+          format,
+        ),
+      ).toThrowError(expect.objectContaining({ code: "unsupported_tool" }));
+    },
+  );
+  it.each(["messages", "reasoning_effort", "response_format", "verbosity"])(
+    "rejects known Chat-only %s on Responses",
+    (param) => {
+      expect(() =>
+        normalizeRequest(
+          { model: "m", input: "x", [param]: "future" },
+          "responses",
+        ),
+      ).toThrowError(
+        expect.objectContaining({ code: "unsupported_parameter", param }),
+      );
+    },
+  );
   it("merges Chat verbosity with structured response format", () => {
     const result = normalizeRequest(
       {
@@ -314,7 +374,7 @@ describe("request normalization", () => {
     ).toThrowError(expect.objectContaining({ code: "unsupported_parameter" }));
   });
   it.each([
-    { reasoning: { effort: "invented" } },
+    { reasoning: { effort: 42 } },
     { text: { format: { type: "json_schema", name: "missing_schema" } } },
     { text: { format: { type: "audio" } } },
     { include: ["message.output_text.logprobs"] },
@@ -602,7 +662,6 @@ describe("request normalization", () => {
     { model: "x", input: {} },
     { model: "x", input: [] },
     { model: "x", input: "x", stream: "true" },
-    { model: "x", input: "x", typo: true },
   ])("rejects invalid request %j", (value) => {
     expect(() => normalizeRequest(value, "responses")).toThrowError(
       expect.objectContaining({ status: 400 }),

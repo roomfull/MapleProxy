@@ -47,19 +47,56 @@ it("keeps CSRF in memory, uses same-origin cookies and exposes show-once key res
   expect(JSON.stringify(calls.slice(1))).not.toContain("private-password");
 });
 it("reports backend errors and clears authentication on session expiry", async () => {
-  const client = new ApiClient(
-    async () =>
-      new Response(
-        JSON.stringify({
-          error: { code: "admin_unauthorized", message: "请重新登录" },
-        }),
-        { status: 401 },
-      ),
-  );
+  const calls: RequestInit[] = [];
+  const client = new ApiClient(async (path, init) => {
+    calls.push(init);
+    if (path.endsWith("/login"))
+      return Response.json({ authenticated: true, csrfToken: "local-csrf" });
+    return new Response(
+      JSON.stringify({
+        error: { code: "admin_unauthorized", message: "请重新登录" },
+      }),
+      { status: 401 },
+    );
+  });
   let expired = false;
   client.onExpired = () => {
     expired = true;
   };
+  await client.login("synthetic-password");
   await expect(client.request("/keys")).rejects.toThrow("请重新登录");
   expect(expired).toBe(true);
+  await expect(client.request("/accounts/a/default", "POST")).rejects.toThrow();
+  expect(new Headers(calls.at(-1)!.headers).has("x-csrf-token")).toBe(false);
+});
+it("keeps the management session and CSRF usable after an upstream 401", async () => {
+  const calls: RequestInit[] = [];
+  const client = new ApiClient(async (path, init) => {
+    calls.push(init);
+    if (path.endsWith("/login"))
+      return Response.json({ authenticated: true, csrfToken: "local-csrf" });
+    if (path.endsWith("/models"))
+      return Response.json(
+        {
+          error: {
+            code: "invalid_token",
+            message: "Upstream rejected the selected connection.",
+          },
+        },
+        { status: 401 },
+      );
+    return Response.json({ ok: true });
+  });
+  client.onExpired = vi.fn();
+  await client.login("synthetic-password");
+  await expect(client.request("/models")).rejects.toThrow("Upstream rejected");
+  expect(client.onExpired).not.toHaveBeenCalled();
+  for (const path of [
+    "/sign-in",
+    "/accounts/a/default",
+    "/accounts/a/disconnect",
+  ])
+    await client.request(path, "POST", {});
+  for (const call of calls.slice(2))
+    expect(new Headers(call.headers).get("x-csrf-token")).toBe("local-csrf");
 });

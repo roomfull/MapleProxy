@@ -9,7 +9,7 @@
 | `GET /v1/models` | Bearer 本地密钥；从默认账户官方目录中取 `visibility:list`，`slug` 映射 `id`；返回 OpenAI `object:list`。不使用硬编码生产模型列表。 |
 | `POST /v1/responses` | 原生受支持的 Responses 请求；下游默认非流式，可 `stream:true`。 |
 | `POST /v1/chat/completions` | 将可表示的 Chat 输入转为 Responses，响应转为 Chat 格式；只有单个 choice。 |
-| 上游 | 固定公开 `/v1/responses`，`store:false, stream:true`。用户 `store` 值不会产生持久存储。普通非流式下游等待完整上游后聚合。 |
+| 上游 | 固定公开 `/v1/responses`，`store:false, stream:true`。`store:true` 明确拒绝；下游 `stream:false` 等待完整上游后聚合。 |
 | 身份 | 每次请求开始确定账户。手动默认切换影响新请求；停用/退出中止该账户。不会重试、切换备用账户或回放。 |
 | 凭据 | 本地 API key 仅授权推理；管理 cookie 仅授权管理。OAuth token 仅在可信服务器进程/Windows DPAPI 保存。 |
 | 未实现 API | Files 上传、音频/转录、图像生成、Embeddings、Completions、Assistants、Batch、Responses retrieve/delete/cancel、独立 compact/token-count 端点均不存在（JSON 404）。 |
@@ -26,9 +26,9 @@
 | 工具调用历史 | function/custom call + output；显式 namespace 保留；无配对的 named function output 使用稳定 namespace。 | assistant `tool_calls` 及 tool 结果映射；自定义 payload 与函数 JSON arguments 保留。 |
 | 本地工具 | shell/local_shell/apply_patch 定义及对应 call/output 历史保留；由客户端执行。 | 非 function/custom 输出不能无损表示时返回 `unsupported_output`；使用 Responses。 |
 | Web search | 支持 web_search 与日期/preview 别名、搜索事件/引用；能力取决于模型和账户政策。 | 不接受 `web_search_options`；上游搜索消息的 URL 引用映射为 Chat annotations。 |
-| Reasoning | `reasoning` 的 effort/summary/generate_summary 与加密 reasoning 历史保留。 | `reasoning_effort` 映射 effort；允许 none/minimal/low/medium/high/xhigh/max。不会生成不存在的思考文本，也不能承载加密 reasoning 历史。 |
+| Reasoning | `reasoning` 的 effort/summary/generate_summary 与加密 reasoning 历史保留；effort 的未知字符串由上游判断，非字符串拒绝。 | `reasoning_effort` 映射 effort，未知字符串同样交由上游。不会生成不存在的思考文本，也不能承载加密 reasoning 历史。 |
 | 文本格式 | `text.format` 支持 text/json_object/json_schema，`text.verbosity` 支持 low/medium/high。 | `response_format` 转 `text.format`，`verbosity` 合并进 text。 |
-| 高级原生字段 | `parallel_tool_calls`、`tool_choice`、`prompt_cache_key`、`prompt_cache_options`、`service_tier`、`access_programs`、`context_management` 透传受支持结构。 | 接受可对应字段；原生专属字段使用 Responses。未知顶层字段明确拒绝，不静默猜测。 |
+| 高级原生字段 | `parallel_tool_calls`、`tool_choice`、`prompt_cache_key`、`prompt_cache_options`、`service_tier`、`access_programs`、`context_management` 透传受支持结构；未知模型选项透传，由上游决定。 | 接受可对应字段和未知模型选项；已知原生专属字段使用 Responses。Responses 拒绝已知 Chat 专属 messages/reasoning_effort/response_format/verbosity。 |
 | `include` | 接受 web_search_call.results / web_search_call.action.sources / message.input_image.image_url / reasoning.encrypted_content。 | 原生专属 `include` 不接受。 |
 | 输出 | 原生完整 final response 和 SSE events 保留（含 reasoning/compaction/本地工具等非文本项）；失败另追加结构化错误。 | text/refusal、function/custom call、URL annotations、finish_reason、usage；reasoning/web_search item 本身不变成文本。其他非文本输出拒绝。 |
 
@@ -38,9 +38,11 @@
 
 以下普通参数在兼容模式被移除：`temperature`、`top_p`、`max_tokens`、`max_completion_tokens`、`max_output_tokens`、`metadata`、`safety_identifier`、`user`。响应通过 `X-MapleProxy-Ignored-Params` 列出名称，管理活动记录保存名称；**max_tokens 等不会限制实际输出长度**。客户端应查看此 header，并自行约束需要的生成行为。
 
+未知顶层模型选项（包括对象/标量）保持原值透传；JSON 自有键如 `__proto__` 不会改变请求对象原型。未知 effort 字符串保留，类型仍须 string 或 null。此政策不表示任何真实模型支持这些选项；已知路由语义和结构验证优先适用。
+
 语义不受支持时返回 HTTP 400，带 `unsupported_parameter`、`unsupported_input` 或 `unsupported_tool` 等代码：
 
-- 持久状态：`previous_response_id`、`conversation`、`background`、`prompt`；每次请求必须提供完整上下文。
+- 持久状态：`store:true`、`previous_response_id`、`conversation`、`background`、`prompt`；每次请求必须提供完整上下文。
 - 其他请求语义：`moderation`、`multi_agent`、`max_tool_calls`、`prompt_cache_retention`、`truncation`、`stop`、`top_logprobs`、audio/prediction、旧 `functions`/`function_call`、frequency/presence penalty、logit_bias。
 - Chat 多 choice (`n` 仅允许 1)、`logprobs` 仅接受 false、`modalities` 仅接受 `["text"]`；其他值拒绝。
 - 输入 audio/video；上传文件引用；服务端 image_generation/file_search/code_interpreter/computer/MCP/connectors/tool_search/programmatic_tool_calling。function/custom 的 defer_loading 或非 direct allowed_callers 同样拒绝。
@@ -65,6 +67,7 @@
 | 背压与取消 | 真实 HTTP write 返回 false 时等待 drain；客户端断开中止运行时请求。取消不重放；已输出内容无法收回。 |
 | 推理超时 | runtime 默认总期限 180 秒，覆盖 headers 与 SSE body。constructor 可设置正整数 timeoutMs；生产没有环境/HTTP 超时配置。超时返回 request_timeout/504（流开始后按 SSE 错误）。 |
 | 其他期限 | DevKit 普通远端 fetch 默认 30 秒；管理 OAuth job deadline 5 分钟。客户端需自行配置适合的请求 timeout。 |
+| 管理恢复 | 上游目录 401 保留管理会话/CSRF 并显示资源错误；仅本地 admin_unauthorized 401 使管理会话失效。OAuth 超时任务标记失败，旧取消真正结束前新登录返回 sign_in_busy。 |
 | 请求体 | 整个 JSON 最大 32 MiB，超限 413/body_too_large。内联 base64 增加约 33% 体积，还需留其他字段空间；代理上限不保证模型文件上限。 |
 | Activity | 最多 200 条内存元数据，无 prompt/output/token；ignored 名称可见，重启清空。 |
 

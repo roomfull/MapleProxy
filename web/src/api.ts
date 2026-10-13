@@ -42,7 +42,11 @@ export class ApiClient {
     if (response.status === 204) return undefined as T;
     const data = await response.json();
     if (!response.ok) {
-      if (response.status === 401 && path !== "/login") {
+      if (
+        response.status === 401 &&
+        data.error?.code === "admin_unauthorized" &&
+        path !== "/login"
+      ) {
         this.csrfToken = undefined;
         this.onExpired?.();
       }

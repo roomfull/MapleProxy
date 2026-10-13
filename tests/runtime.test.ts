@@ -1,8 +1,58 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
+import { renderStream } from "../src/protocol/events.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createAccountRuntime } from "../src/auth/runtime.js";
 import { encryption, fixture, streamResponse } from "./helpers.js";
+test("the production SSE parser preserves explicit native error payloads before failing without success", async () => {
+  const event = {
+    type: "error",
+    code: "invalid_token",
+    message: "private synthetic provider message 中文 🦊",
+    param: "model",
+    sequence_number: 7,
+  };
+  const logs = ["debug", "log", "info", "warn", "error"].map((method) =>
+    vi.spyOn(console, method as "log").mockImplementation(() => {}),
+  );
+  try {
+    const { runtime } = await setup(async () => {
+      const bytes = new TextEncoder().encode(
+        `event: error\r\ndata: ${JSON.stringify(event)}\r\n\r\ndata: [DONE]\r\n\r\n`,
+      );
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            for (let i = 0; i < bytes.length; i += 3)
+              controller.enqueue(bytes.slice(i, i + 3));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    });
+    const upstream = await runtime.requestResponses({
+      body: { model: "m", input: "x" },
+    });
+    const frames: string[] = [];
+    await expect(
+      (async () => {
+        for await (const frame of renderStream(
+          upstream.events,
+          "responses",
+          "m",
+        ))
+          frames.push(frame);
+      })(),
+    ).rejects.toMatchObject({ code: "upstream_stream_error" });
+    expect(frames).toHaveLength(1);
+    expect(JSON.parse(frames[0]!.split("data: ")[1]!)).toEqual(event);
+    expect(frames.join("")).not.toContain("[DONE]");
+    for (const log of logs) expect(log).not.toHaveBeenCalled();
+  } finally {
+    for (const log of logs) log.mockRestore();
+  }
+});
 test("logout during locked refresh prevents inference and revokes the persisted successor", async () => {
   let received!: () => void;
   const started = new Promise<void>((r) => (received = r));

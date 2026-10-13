@@ -1,6 +1,21 @@
 # 验证记录（2026-10-13）
 
-此记录汇总 Task 4 实现者与控制器在 Codex 重启前完成的验证。恢复后保留了源文件、测试、curl 验证脚本和浏览器截图；本文依据移交记录及控制器的浏览器报告整理，恢复收尾阶段没有重跑整套测试或浏览器操作。所有账户、密钥、上游事件均为合成 fixture，生产数据目录未初始化，未使用真实 OpenAI 账户完成 OAuth 或推理。
+此记录保留 Task 4 实现者与控制器在 Codex 重启前的验证，另记录最终修复者在 2026-10-13 新执行的回归与全套验证。Task 4 的恢复收尾依据移交记录及浏览器报告，没有重跑当时整套测试或浏览器；最终修复全套执行如下单独归属。所有账户、密钥、上游事件均为合成 fixture，生产数据目录未初始化，未使用真实 OpenAI 账户完成 OAuth 或推理。
+
+## 最终修复新执行证据
+
+最终全分支审查发现的 2 Important + 4 Minor 已在同一轮修复。新增测试先在原代码得到 **9 failed / 109 passed（5 files）**，覆盖未知选项、上游 401、非流式请求 ID、显式 native error、延迟取消和两类初始化失败。首次 sandbox 执行额外受到 Windows 临时文件 rename 的 EPERM 限制；正常提权后记录的 RED 是断言失败，不是权限错误。测试文件对原生 ESM 的 mock 准备错误也在有效 RED 前修正。
+
+| 最终修复者执行命令 | 结果 |
+| --- | --- |
+| `npm run test:unit -- tests/protocol.test.ts tests/web-api.test.ts tests/server.test.ts tests/runtime.test.ts tests/smoke-fixture.test.ts tests/integration.test.ts` | 6 files、132/132 通过。 |
+| `npm test` | 13 project files、162/162 通过；DevKit 56 通过、1 平台跳过、0 失败。 |
+| `npm run typecheck` | exit 0。 |
+| `npm run build` | exit 0，vendor/server/web 均构建。 |
+
+回归新增 HTTP + ApiClient 验证上游 invalid_token/401 保留会话与 CSRF、后续管理操作可用；本地 admin_unauthorized 仍触发失效。两种非流式格式覆盖 failed/incomplete/EOF 与有效/无效/缺失 request ID，header/envelope/activity 一致。真实生产传输使用锁定 SDK 的 UTF-8/SSE decoder，3-byte 分片的显式 event:error 保留 code/message/param/sequence_number；经真实 loopback 双路由确认失败、无正常终止标记，安全 envelope 和日志不含 provider 私密消息。延迟取消用手动触发真实 deadline 回调，不等待五分钟；旧 promise 未结算前返回 409，结算后新 job 为 202。fixture 密码设置或 app 构建失败后，其自建 OS 临时目录均不存在。
+
+未新增浏览器、真实 OAuth 或真实远端推理验收；原浏览器限制和历史 Task 4 首次 integration GREEN 事实保留。审查意见原文保留于忽略的 SDD 工作区，修复仍等待独立 scoped re-review。
 
 ## 命令与结果
 
@@ -51,5 +66,5 @@
 
 - 真实 OAuth、远端权限、账户策略以及各模型对工具/多模态/高级字段的实际支持仍待用户自行授权后的 smoke；步骤见 [README](../README.md)。不使用自动测试调用真实 OpenAI。
 - Task 3 M1 的安全锁恢复已写入 README：先停止全部 server/setup 写入者，确认数据目录，仅删除遗留 `security.json.lock`，保留账户与 `security.json`。
-- Task 3 M2 留待最终全分支审查：OAuth 5 分钟 deadline 调用取消后过早释放 active 标记，立即重试可能短暂失败 `connection_busy`，旧取消完成后可重试。已有复现显示 SDK 阻止实际并行 OAuth，没有新旧 job 污染；本次未修改该生命周期代码。
-- Task 4 独立任务审查及最终全分支审查在此实现提交后由控制器继续，本文不提前宣称审查通过。
+- Task 3 M2 的历史提前释放已在最终修复中解决：超时显示 sign_in_timeout，取消结算前保留 active，新启动返回 sign_in_busy。历史复现/审查记录保留；本页顶部记录新增回归。
+- 最终全分支审查及唯一修复轮已完成，独立 scoped re-review 和最终批准仍由控制器继续，本文不提前宣称审查通过。

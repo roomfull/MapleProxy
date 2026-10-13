@@ -1,5 +1,42 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import * as fs from "node:fs/promises";
+import * as server from "../src/server/app.js";
+import { SecurityStore } from "../src/server/security.js";
 import { startSmokeFixture, smokePassword } from "../scripts/smoke-fixture.js";
+vi.mock("node:fs/promises", { spy: true });
+
+it.each(["password", "app"])(
+  "removes owned synthetic temp data when %s initialization fails",
+  async (stage) => {
+    let owned!: string;
+    const { mkdtemp: realMkdtemp } =
+      await vi.importActual<typeof fs>("node:fs/promises");
+    const directory = vi
+      .spyOn(fs, "mkdtemp")
+      .mockImplementation(async (prefix, options) => {
+        owned = (await realMkdtemp(prefix, options)) as string;
+        return owned;
+      });
+    const failure =
+      stage === "password"
+        ? vi
+            .spyOn(SecurityStore.prototype, "setPassword")
+            .mockRejectedValue(new Error("synthetic startup failure"))
+        : vi
+            .spyOn(server, "createApp")
+            .mockRejectedValue(new Error("synthetic startup failure"));
+    try {
+      await expect(startSmokeFixture()).rejects.toThrow(
+        "synthetic startup failure",
+      );
+      await expect(fs.stat(owned)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      directory.mockRestore();
+      failure.mockRestore();
+      if (owned) await fs.rm(owned, { recursive: true, force: true });
+    }
+  },
+);
 
 it("starts an isolated browser fixture, seeds activity through HTTP, and closes its listener", async () => {
   const fixture = await startSmokeFixture();

@@ -184,8 +184,16 @@ export async function createApp({
       } catch (error) {
         code =
           error instanceof AppError ? safeField(error.code) : "internal_error";
-        if (error instanceof AppError)
+        if (error instanceof AppError) {
           requestId = safeField(error.requestId) ?? requestId;
+          throw new AppError(
+            error.status,
+            error.code,
+            error.message,
+            error.param,
+            requestId,
+          );
+        }
         throw error;
       } finally {
         if (controller.signal.aborted) result = "cancelled";

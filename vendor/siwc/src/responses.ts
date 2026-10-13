@@ -1,5 +1,6 @@
 // Modified by MapleProxy: see ../PROVENANCE.md.
 import OpenAI from "openai";
+import { _iterSSEMessages } from "openai/core/streaming";
 import { apiError, ChatGPTError, isObject } from "./errors.js";
 import type { StreamResponseOptions } from "./types.js";
 import type { ChatGPTConfig } from "./types.js";
@@ -14,7 +15,12 @@ export async function requestResponseStream(
   onClose: () => void = () => {},
 ) {
   const deadline = AbortSignal.timeout(config.timeoutMs ?? 180_000);
-  const requestSignal = AbortSignal.any([signal, deadline]);
+  const streamController = new AbortController();
+  const requestSignal = AbortSignal.any([
+    signal,
+    deadline,
+    streamController.signal,
+  ]);
   const headers: Record<string, string | null> = {
     authorization: `Bearer ${accessToken}`,
     "openai-organization": null,
@@ -75,13 +81,12 @@ export async function requestResponseStream(
     );
   };
   try {
-    const result = await client.responses
+    response = await client.responses
       .create(
         { ...body, store: false, stream: true },
         { signal: requestSignal, headers: { accept: "text/event-stream" } },
       )
-      .withResponse();
-    response = result.response;
+      .asResponse();
     const contentType = response.headers
       .get("content-type")
       ?.split(";")[0]
@@ -99,14 +104,31 @@ export async function requestResponseStream(
         502,
       );
     }
-    const source = result.data[Symbol.asyncIterator]();
+    // Use the pinned SDK's UTF-8/SSE decoder before its high-level parser
+    // consumes event:error as an APIError. Preserve native payloads for clients.
+    const source = (async function* () {
+      for await (const frame of _iterSSEMessages(response!, streamController)) {
+        if (frame.data === "[DONE]") return;
+        const data = JSON.parse(frame.data);
+        if (!isObject(data)) throw new SyntaxError("Invalid response event.");
+        const event =
+          frame.event === "error" ? { ...data, type: "error" } : data;
+        yield event;
+        if (event.type === "error" || data.error)
+          throw apiError(
+            data,
+            response!.status,
+            response!.headers.get("x-request-id"),
+          );
+      }
+    })();
     let completed = false;
     let closed = false;
     const close = (abort = true) => {
       if (!closed) {
         closed = true;
         requestSignal.removeEventListener("abort", onAbort);
-        if (abort) result.data.controller.abort();
+        if (abort) streamController.abort();
         onClose();
       }
     };

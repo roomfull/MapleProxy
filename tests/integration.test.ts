@@ -321,7 +321,7 @@ it("replays complete native tool and encrypted reasoning output over SDK multi-t
   });
 });
 
-it.each(["failed", "incomplete", "eof"])(
+it.each(["failed", "incomplete", "eof", "error"])(
   "never reports success after %s streams, through both official downstream SDKs",
   async (failure) => {
     const events: JsonObject[] = [
@@ -333,7 +333,15 @@ it.each(["failed", "incomplete", "eof"])(
         delta: "partial🍁",
       },
     ];
-    if (failure !== "eof")
+    if (failure === "error")
+      events.push({
+        type: "error",
+        code: "invalid_token",
+        message: "synthetic-private-detail",
+        param: "model",
+        sequence_number: 7,
+      });
+    else if (failure !== "eof")
       events.push({
         type: `response.${failure}`,
         response: {
@@ -395,6 +403,12 @@ it.each(["failed", "incomplete", "eof"])(
       const text = await raw.text();
       expect(text).toContain("event: error");
       expect(text).not.toContain("[DONE]");
+      if (failure === "error" && format === "responses") {
+        const native = text
+          .split("\n\n")
+          .find((frame) => frame.includes('"sequence_number":7'))!;
+        expect(JSON.parse(native.split("data: ")[1]!)).toEqual(events.at(-1));
+      }
       // Native terminal events preserve upstream payloads by contract; our generated error stays generic.
       expect(text.split("event: error").at(-1)).not.toContain(
         "synthetic-private-detail",

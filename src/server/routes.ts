@@ -208,7 +208,7 @@ export function registerAdmin(
           job.status = "failed";
           job.code = "sign_in_timeout";
           runtime.cancelSignIn();
-          finish();
+          // Retain the reservation until the sign-in promise actually settles.
         }
       }, 5 * 60_000);
       deadline.unref();

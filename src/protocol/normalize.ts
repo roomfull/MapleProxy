@@ -81,7 +81,6 @@ const webTools = new Set([
   "web_search_preview_2025_03_11",
 ]);
 const clientTools = new Set(["shell", "local_shell", "apply_patch"]);
-const efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 function array(value: unknown, param: string): any[] {
   if (!Array.isArray(value)) requestError(param, `${param} must be an array.`);
   return value;
@@ -596,10 +595,15 @@ export function normalizeRequest(
         `${key} is not supported by this route.`,
         "unsupported_parameter",
       );
-    if (!(format === "chat" ? chatFields : nativeFields).has(key))
+    // Known fields from the other wire format require explicit conversion.
+    // Unknown model options remain the authoritative upstream's decision.
+    if (
+      (format === "chat" ? nativeFields : chatFields).has(key) &&
+      !(format === "chat" ? chatFields : nativeFields).has(key)
+    )
       requestError(
         key,
-        `Unknown or unsupported parameter ${key}.`,
+        `${key} is not supported by this route.`,
         "unsupported_parameter",
       );
     if (
@@ -614,7 +618,13 @@ export function normalizeRequest(
       ].includes(key)
     )
       continue;
-    body[key] = value;
+    // Own JSON keys such as __proto__ must never invoke inherited setters.
+    Object.defineProperty(body, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   body.input =
     format === "chat" ? chatInput(copied.messages) : nativeInput(copied.input);
@@ -628,7 +638,7 @@ export function normalizeRequest(
   if (copied.reasoning_effort !== undefined) {
     if (
       copied.reasoning_effort !== null &&
-      !efforts.includes(copied.reasoning_effort)
+      typeof copied.reasoning_effort !== "string"
     )
       requestError("reasoning_effort", "Invalid reasoning effort.");
     body.reasoning = { effort: copied.reasoning_effort };
@@ -677,7 +687,7 @@ export function normalizeRequest(
     );
   if (
     body.reasoning?.effort != null &&
-    !efforts.includes(body.reasoning.effort)
+    typeof body.reasoning.effort !== "string"
   )
     requestError("reasoning.effort", "Invalid reasoning effort.");
   for (const key of ["summary", "generate_summary"])

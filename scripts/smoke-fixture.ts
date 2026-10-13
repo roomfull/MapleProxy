@@ -91,21 +91,25 @@ export async function startSmokeFixture(): Promise<{
       };
     },
   };
-  await security.setPassword(smokePassword);
-  const app = await createApp({
-    runtime,
-    dataDir,
-    webDir: resolve("web/dist"),
-    port: 0,
-  });
+  let app: Awaited<ReturnType<typeof createApp>> | undefined;
   let closed = false;
   const close = async () => {
     if (closed) return;
     closed = true;
-    await app.close();
-    await rm(dataDir, { recursive: true, force: true });
+    try {
+      await app?.close();
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
   };
   try {
+    await security.setPassword(smokePassword);
+    app = await createApp({
+      runtime,
+      dataDir,
+      webDir: resolve("web/dist"),
+      port: 0,
+    });
     await app.listen({ host: "127.0.0.1", port: 0 });
     const url = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;
     const seed = async () => {

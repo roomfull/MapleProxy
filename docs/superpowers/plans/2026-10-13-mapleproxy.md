@@ -120,7 +120,7 @@ expect(result.choices[0].message.content).toBe('hello');
 - [x] README in Chinese: prerequisites, npm ci/build/setup/start, http://127.0.0.1:8317, data/key/password recovery, native Windows credential restriction, local scope, supported model discovery, exact launch and both SDK/curl examples, authorized real OAuth smoke steps, limitations and no quota display. Document no real OpenAI account tested if none supplied by user.
 - [x] Compatibility matrix covers filtering/ignored header, all supported request/output types, semantic rejections, SSE errors, timeout/body limits, local tool ownership, absent API routes and HTTP-only context rules. Cite official docs and upstream commit/license, explain DevKit modifications and no private backend dependency.
 - [x] Commit integration/docs and report test commands/results and remaining live-OAuth limitation. Integration tests first ran GREEN against existing behavior; actual new RED/GREEN evidence is the browser default-fetch receiver regression. See docs/verification.md for attribution and browser limits.
-- [ ] Final full-branch read-only review, one consolidated fix wave if required, scoped re-review. Keep working tree clean; no push/PR without remote/user request.
+- [ ] Final full-branch read-only review completed with 2 Important and 4 Minor findings; sole consolidated fix wave implemented and tested, awaiting scoped re-review and controller approval. Keep working tree clean; no push/PR without remote/user request.
 
 ## Review and progress
 
