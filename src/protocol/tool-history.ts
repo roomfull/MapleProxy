@@ -58,6 +58,13 @@ export function convertLegacyFunctions(
     converted("function_call");
   }
   if (!Array.isArray(request.messages)) return;
+  // Reserve client IDs from the entire history, including later modern turns.
+  const usedIds = new Set<string>();
+  for (const message of request.messages) {
+    if (!message || !Array.isArray(message.tool_calls)) continue;
+    for (const call of message.tool_calls)
+      if (call && typeof call.id === "string") usedIds.add(call.id);
+  }
   const pending = new Map<string, Array<{ id: string; resolved: boolean }>>();
   for (const [i, message] of request.messages.entries()) {
     if (!message || typeof message !== "object") continue;
@@ -84,7 +91,11 @@ export function convertLegacyFunctions(
         spec.arguments = functionArguments(spec.arguments);
         converted(`${path}.function_call.arguments`);
       }
-      const id = `call_mapleproxy_legacy_${i}`;
+      const baseId = `call_mapleproxy_legacy_${i}`;
+      let id = baseId;
+      for (let suffix = 1; usedIds.has(id); suffix++)
+        id = `${baseId}_${suffix}`;
+      usedIds.add(id);
       message.tool_calls = [{ id, type: "function", function: spec }];
       const entries = pending.get(spec.name) ?? [];
       entries.push({ id, resolved: false });

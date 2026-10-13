@@ -425,6 +425,65 @@ describe("legacy functions", () => {
         .tool_choice,
     ).toBe(value);
   });
+  it.each(["before", "after"] as const)(
+    "avoids legacy ID collisions with modern calls %s the legacy turn",
+    (position) => {
+      const legacyPosition = position === "before" ? 4 : 0;
+      const reserved = `call_mapleproxy_legacy_${legacyPosition}`;
+      const clientIds = [reserved, `${reserved}_1`, `${reserved}_2`];
+      const modernMessages = [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: clientIds.map((id) => ({
+            id,
+            type: "function",
+            function: { name: "read", arguments: "{}" },
+          })),
+        },
+        ...clientIds.map((id) => ({
+          role: "tool",
+          tool_call_id: id,
+          content: `result_${id}`,
+        })),
+      ];
+      const legacyMessages = [
+        { role: "assistant", function_call: { name: "read", arguments: "{}" } },
+        { role: "function", name: "read", content: "legacy_result" },
+      ];
+      const source = {
+        model: "m",
+        messages:
+          position === "before"
+            ? [...modernMessages, ...legacyMessages]
+            : [...legacyMessages, ...modernMessages],
+      };
+      const first = normalizeRequest(source, "chat").body.input as JsonObject[];
+      const second = normalizeRequest(source, "chat").body
+        .input as JsonObject[];
+      expect(second).toEqual(first);
+      const calls = first.filter((item) => item.type === "function_call");
+      const outputs = first.filter(
+        (item) => item.type === "function_call_output",
+      );
+      expect(calls).toHaveLength(4);
+      expect(new Set(calls.map((item) => item.call_id)).size).toBe(4);
+      for (const id of clientIds) {
+        expect(calls.some((item) => item.call_id === id)).toBe(true);
+        expect(outputs.find((item) => item.call_id === id)?.output).toBe(
+          `result_${id}`,
+        );
+      }
+      const generated = calls.find(
+        (item) => !clientIds.includes(item.call_id),
+      )!;
+      expect(generated.call_id).toBe(`${reserved}_3`);
+      expect(
+        outputs.find((item) => item.output === "legacy_result")?.call_id,
+      ).toBe(generated.call_id);
+      expect(source.messages).toContainEqual(legacyMessages[0]);
+    },
+  );
   it("streams legacy name and argument deltas without modern fields", async () => {
     const first = normalizeRequest(legacy, "chat");
     const output = call("a", "read", '{"x":null}');
