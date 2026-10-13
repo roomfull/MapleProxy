@@ -23,6 +23,8 @@ select {
   font: inherit;
 }
 button {
+  white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
   border: 1px solid #d9dfe4;
   border-radius: 7px;
@@ -569,6 +571,8 @@ pre {
   color: #a25f56;
 }
 .notice button {
+  white-space: nowrap;
+  flex-shrink: 0;
   font-size: 15px;
   padding: 2px 7px;
   color: inherit;
@@ -825,18 +829,20 @@ td {
     display: none;
   }
   .sidebar nav {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 5px;
-    overflow-x: auto;
   }
   .sidebar nav button {
-    padding: 10px 12px;
+    min-width: 0;
+    justify-content: center;
+    padding: 10px 4px;
     white-space: nowrap;
     font-size: 12px;
     gap: 7px;
   }
   .sidebar nav button span {
-    font-size: 17px;
+    display: none;
   }
   .nav-label,
   .sidebar-bottom {

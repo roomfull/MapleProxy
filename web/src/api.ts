@@ -10,7 +10,7 @@ export class ApiClient {
     private readonly fetcher: (
       input: string,
       init: RequestInit,
-    ) => Promise<Response> = fetch,
+    ) => Promise<Response> = (input, init) => globalThis.fetch(input, init),
   ) {}
   async session(): Promise<SessionView> {
     const session = await this.request<SessionView>("/session");

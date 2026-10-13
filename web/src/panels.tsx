@@ -433,8 +433,7 @@ export function Keys({
         <pre>{example}</pre>
         <p className="caption">
           执行后在隐藏提示中输入访问密钥。密钥在 PowerShell
-          进程内部加入请求头，不会拼入命令行参数。请将 MODEL_ID
-          替换为模型目录中的实际 ID。
+          进程内部加入请求头，不会拼入命令行参数。请使用模型目录中的实际 ID。
         </p>
       </section>
       <div className="info-note">

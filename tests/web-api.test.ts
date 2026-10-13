@@ -1,5 +1,22 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { ApiClient } from "../web/src/api.js";
+
+it("invokes the default browser fetch with its global receiver", async () => {
+  vi.stubGlobal("fetch", function (this: unknown) {
+    if (this !== globalThis) throw new TypeError("Illegal invocation");
+    return Promise.resolve(
+      Response.json({ configured: true, authenticated: false }),
+    );
+  });
+  try {
+    await expect(new ApiClient().session()).resolves.toEqual({
+      configured: true,
+      authenticated: false,
+    });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 it("keeps CSRF in memory, uses same-origin cookies and exposes show-once key response", async () => {
   const calls: { url: string; init: RequestInit }[] = [];

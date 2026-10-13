@@ -16,6 +16,7 @@
     "dev:web": "vite --config web/vite.config.ts",
     "start": "node dist/src/server/main.js",
     "setup": "tsx scripts/setup.ts",
+    "smoke": "tsx scripts/smoke.ts",
     "notices:generate": "node scripts/runtime-notices.mjs"
   },
   "dependencies": {
