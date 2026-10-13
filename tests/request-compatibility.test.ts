@@ -56,6 +56,20 @@ describe("client request compatibility", () => {
         ],
       },
       {
+        type: "function_call",
+        call_id: "call_1",
+        name: "read",
+        namespace: "workspace",
+        arguments: "{}",
+      },
+      {
+        type: "custom_tool_call",
+        call_id: "call_2",
+        name: "patch",
+        namespace: "workspace",
+        input: "payload",
+      },
+      {
         type: "function_call_output",
         call_id: "call_1",
         output: "done",
@@ -111,6 +125,8 @@ describe("client request compatibility", () => {
       },
       input[2],
       input[3],
+      input[4],
+      input[5],
     ]);
     expect(result.diagnostics.map((item) => item.path)).toEqual([
       "input[0].content[0].logprobs",

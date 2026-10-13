@@ -157,6 +157,7 @@ describe("request normalization", () => {
       );
       expect(result.renderOptions).toEqual({
         includeUsage: includeUsage === true,
+        responseContext: result.responseContext,
       });
       expect(result.body.renderOptions).toBeUndefined();
       expect(result.body.stream_options?.include_usage).toBeUndefined();
@@ -697,7 +698,6 @@ describe("request normalization", () => {
     { top_logprobs: 2 },
     { audio: { voice: "alloy" } },
     { modalities: ["audio"] },
-    { functions: [] },
     { web_search_options: {} },
   ])("rejects unsupported Chat semantics %j", (value) => {
     expect(() =>

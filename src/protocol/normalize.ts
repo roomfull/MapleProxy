@@ -10,6 +10,7 @@ import {
   webTools,
 } from "./capabilities.js";
 import type { RequestDiagnostic, ResponseContext } from "./types.js";
+import { convertLegacyFunctions, validateToolHistory } from "./tool-history.js";
 import {
   assertNativeNamespace,
   assistantHistory,
@@ -19,11 +20,26 @@ import {
   object,
   requestError,
   string,
+  functionArguments,
 } from "./chat.js";
 
 function array(value: unknown, param: string): any[] {
   if (!Array.isArray(value)) requestError(param, `${param} must be an array.`);
   return value;
+}
+function normalizeArguments(
+  value: string,
+  path: string,
+  diagnostics: RequestDiagnostic[],
+): string {
+  const normalized = functionArguments(value);
+  if (normalized !== value)
+    diagnostics.push({
+      path,
+      action: "normalized",
+      reason: "protocol_conversion",
+    });
+  return normalized;
 }
 function toolDefinition(value: unknown, param: string): JsonObject {
   const tool = object(value, param);
@@ -123,7 +139,10 @@ function inputPart(value: unknown, param: string): JsonObject {
     );
   return part;
 }
-function nativeInput(value: unknown): JsonObject[] {
+function nativeInput(
+  value: unknown,
+  diagnostics: RequestDiagnostic[],
+): JsonObject[] {
   if (typeof value === "string")
     return [
       {
@@ -163,6 +182,12 @@ function nativeInput(value: unknown): JsonObject[] {
         "string"
       )
         requestError(param, "Tool call payload must be a string.");
+      if (item.type === "function_call")
+        item.arguments = normalizeArguments(
+          item.arguments,
+          `${param}.arguments`,
+          diagnostics,
+        );
       return item;
     }
     if (
@@ -253,12 +278,35 @@ function chatContent(
     );
   });
 }
-function chatInput(value: unknown): JsonObject[] {
+function rememberToolName(
+  context: ResponseContext,
+  namespace: string,
+  name: string,
+  clientName: string,
+) {
+  if (
+    !context.toolNames.some(
+      (tool) =>
+        tool.namespace === namespace &&
+        tool.name === name &&
+        tool.clientName === clientName,
+    )
+  )
+    context.toolNames.push({ namespace, name, clientName });
+}
+function chatInput(
+  value: unknown,
+  context: ResponseContext,
+  diagnostics: RequestDiagnostic[],
+): JsonObject[] {
   const messages = array(value, "messages");
   if (!messages.length)
     requestError("messages", "messages must contain at least one message.");
   const inputs: JsonObject[] = [],
-    calls = new Map<string, string>();
+    calls = new Map<
+      string,
+      { type: string; path: string; resolved: boolean }
+    >();
   for (const [i, value] of messages.entries()) {
     const param = `messages[${i}]`,
       message = object(value, param);
@@ -268,7 +316,7 @@ function chatInput(value: unknown): JsonObject[] {
       )
     )
       requestError(`${param}.role`, "Unsupported Chat role.");
-    for (const key of ["function_call", "audio"])
+    for (const key of ["audio"])
       if (message[key] !== undefined)
         requestError(
           `${param}.${key}`,
@@ -277,15 +325,18 @@ function chatInput(value: unknown): JsonObject[] {
         );
     if (message.role === "tool") {
       const callId = string(message.tool_call_id, `${param}.tool_call_id`),
-        type = calls.get(callId);
-      if (!type)
+        call = calls.get(callId);
+      if (!call)
         requestError(
           `${param}.tool_call_id`,
           "Tool output must reference a preceding assistant call.",
         );
+      if (call.resolved)
+        requestError(`${param}.tool_call_id`, "Duplicate tool output.");
+      call.resolved = true;
       inputs.push({
         type:
-          type === "custom"
+          call.type === "custom"
             ? "custom_tool_call_output"
             : "function_call_output",
         call_id: callId,
@@ -352,9 +403,10 @@ function chatInput(value: unknown): JsonObject[] {
         const id = string(call.id, `${path}.id`),
           spec = object(call[call.type], path),
           decoded = decodeChatName(spec.name, `${path}.name`);
+        rememberToolName(context, decoded.namespace, decoded.name, spec.name);
         if (calls.has(id))
           requestError(`${path}.id`, "Duplicate tool call ID.");
-        calls.set(id, call.type);
+        calls.set(id, { type: call.type, path, resolved: false });
         const field = call.type === "function" ? "arguments" : "input";
         if (typeof spec[field] !== "string")
           requestError(path, "Tool call payload must be a string.");
@@ -363,14 +415,31 @@ function chatInput(value: unknown): JsonObject[] {
           call_id: id,
           name: decoded.name,
           namespace: decoded.namespace,
-          [field]: spec[field],
+          [field]:
+            call.type === "function"
+              ? normalizeArguments(
+                  spec[field],
+                  `${path}.function.arguments`,
+                  diagnostics,
+                )
+              : spec[field],
         });
       }
     }
   }
+  for (const call of calls.values())
+    if (!call.resolved)
+      requestError(
+        call.path,
+        "Tool call is missing its output in the full history.",
+      );
   return inputs;
 }
-function chatTools(toolValues: unknown): JsonObject[] {
+function chatTools(
+  toolValues: unknown,
+  context: ResponseContext,
+  diagnostics: RequestDiagnostic[],
+): JsonObject[] {
   const result: JsonObject[] = [],
     groups = new Map<string, JsonObject>(),
     names = new Set<string>();
@@ -389,6 +458,15 @@ function chatTools(toolValues: unknown): JsonObject[] {
       requestError(`${param}.name`, "Duplicate tool name.");
     names.add(spec.name);
     const native: JsonObject = { type: tool.type, ...spec, name: decoded.name };
+    if (tool.type === "function" && native.strict == null) {
+      native.strict = false;
+      diagnostics.push({
+        path: `${param}.function.strict`,
+        action: "normalized",
+        reason: "protocol_conversion",
+      });
+    }
+    rememberToolName(context, decoded.namespace, decoded.name, spec.name);
     if (tool.type === "custom" && spec.format?.type === "grammar")
       native.format = {
         type: "grammar",
@@ -514,6 +592,9 @@ function normalize(
       toolNames: [],
       legacyFunctionCall: false,
     };
+  renderOptions.responseContext = responseContext;
+  if (format === "chat")
+    convertLegacyFunctions(copied, responseContext, diagnostics);
   for (const [key, value] of Object.entries(copied)) {
     if (filterRequestField(key, value, format, ignoredParams, diagnostics))
       continue;
@@ -526,11 +607,14 @@ function normalize(
     });
   }
   body.input =
-    format === "chat" ? chatInput(copied.messages) : nativeInput(copied.input);
+    format === "chat"
+      ? chatInput(copied.messages, responseContext, diagnostics)
+      : nativeInput(copied.input, diagnostics);
+  if (format === "responses") validateToolHistory(body.input, "input");
   if (copied.tools !== undefined)
     body.tools =
       format === "chat"
-        ? chatTools(copied.tools)
+        ? chatTools(copied.tools, responseContext, diagnostics)
         : nativeTools(copied.tools, "tools");
   if (copied.tool_choice !== undefined)
     body.tool_choice = choice(copied.tool_choice, format);

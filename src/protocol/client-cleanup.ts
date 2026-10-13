@@ -183,6 +183,19 @@ export function cleanClientRequest(
     "stream_options",
   );
   tools(copied.tools, "tools");
+  if (format === "chat" && Array.isArray(copied.functions))
+    for (const [i, spec] of copied.functions.entries())
+      nulls(
+        spec,
+        [
+          "description",
+          "parameters",
+          "strict",
+          "defer_loading",
+          "allowed_callers",
+        ],
+        `functions[${i}]`,
+      );
 
   const history = format === "chat" ? copied.messages : copied.input;
   const root = format === "chat" ? "messages" : "input";
@@ -194,7 +207,8 @@ export function cleanClientRequest(
         for (const key of Object.keys(item)) {
           if (
             format === "chat"
-              ? !chatMessageFields.has(key)
+              ? !chatMessageFields.has(key) &&
+                !(key === "name" && item.role === "function")
               : clientMessageFields.has(key)
           ) {
             delete item[key];

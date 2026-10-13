@@ -148,6 +148,7 @@ export async function createApp({
             upstream.events,
             format,
             normalized.body.model,
+            normalized.renderOptions,
           );
           result = "success";
           return reply.send(response);

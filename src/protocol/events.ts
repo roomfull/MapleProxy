@@ -1,14 +1,17 @@
 import type { JsonObject } from "../auth/runtime.js";
 import { AppError } from "../shared/errors.js";
+import type { ResponseContext } from "./types.js";
 import {
   chatToolCall,
   chatUsage,
   responseToChat,
   unsupportedOutput,
+  functionArguments,
 } from "./chat.js";
 
 export interface RenderStreamOptions {
   includeUsage?: boolean;
+  responseContext?: ResponseContext;
 }
 
 function terminalError(event: JsonObject): AppError | undefined {
@@ -63,6 +66,7 @@ interface ToolState {
     namespace?: string;
   };
   emitted: string;
+  pending: string;
 }
 
 /** Streaming Chat representation; authoritative complete snapshots fill unsent tails. */
@@ -76,6 +80,7 @@ class ChatStream {
   constructor(
     private readonly model: string,
     private readonly includeUsage: boolean,
+    private readonly context?: ResponseContext,
   ) {}
   private chunk(delta: JsonObject, finish: string | null = null): JsonObject {
     return {
@@ -109,7 +114,14 @@ class ChatStream {
         invalidStream("Tool identity changed during the stream.");
       return { state: existing, chunks: [] };
     }
-    const call = chatToolCall(item),
+    if (
+      this.context?.legacyFunctionCall &&
+      (this.tools.length || item.type !== "function_call")
+    )
+      unsupportedOutput(
+        "Legacy function_call cannot represent parallel or custom calls.",
+      );
+    const call = chatToolCall(item, this.context),
       state: ToolState = {
         index: this.tools.length,
         item: {
@@ -119,6 +131,7 @@ class ChatStream {
           namespace: item.namespace,
         },
         emitted: "",
+        pending: "",
       };
     this.tools.push(state);
     if (item.id) this.itemTools.set(item.id, state);
@@ -129,32 +142,54 @@ class ChatStream {
       state,
       chunks: [
         this.chunk({
-          tool_calls: [
-            {
-              index: state.index,
-              ...call,
-              [field]: { ...call[field], [payload]: "" },
-            },
-          ],
+          ...(this.context?.legacyFunctionCall
+            ? { function_call: { name: call.function.name, arguments: "" } }
+            : {
+                tool_calls: [
+                  {
+                    index: state.index,
+                    ...call,
+                    [field]: { ...call[field], [payload]: "" },
+                  },
+                ],
+              }),
         }),
       ],
     };
   }
   private toolDelta(state: ToolState, delta: string): JsonObject[] {
+    if (typeof delta !== "string")
+      invalidStream("Tool delta must be a string.");
+    if (!delta) return [];
+    state.pending += delta;
+    if (state.item.type === "function_call" && !state.pending.trim()) return [];
+    return this.emitToolDelta(state, state.pending.slice(state.emitted.length));
+  }
+  private emitToolDelta(state: ToolState, delta: string): JsonObject[] {
     if (!delta) return [];
     state.emitted += delta;
     const field = state.item.type === "function_call" ? "function" : "custom",
       payload = state.item.type === "function_call" ? "arguments" : "input";
     return [
       this.chunk({
-        tool_calls: [{ index: state.index, [field]: { [payload]: delta } }],
+        ...(this.context?.legacyFunctionCall
+          ? { function_call: { arguments: delta } }
+          : {
+              tool_calls: [
+                { index: state.index, [field]: { [payload]: delta } },
+              ],
+            }),
       }),
     ];
   }
   private finishTool(state: ToolState, value: string): JsonObject[] {
-    if (typeof value !== "string" || !value.startsWith(state.emitted))
+    if (typeof value !== "string" || !value.startsWith(state.pending))
       invalidStream("Completed tool payload disagrees with streamed deltas.");
-    return this.toolDelta(state, value.slice(state.emitted.length));
+    state.pending = value;
+    if (state.item.type === "function_call") value = functionArguments(value);
+    if (!value.startsWith(state.emitted))
+      invalidStream("Completed tool payload disagrees with streamed deltas.");
+    return this.emitToolDelta(state, value.slice(state.emitted.length));
   }
   private textKey(
     itemId: string,
@@ -287,13 +322,13 @@ class ChatStream {
       );
     } else if (event.type === "response.completed") {
       // Validate the full native output before emitting a successful finish.
-      const chat = responseToChat(event.response, this.model);
+      const chat = responseToChat(event.response, this.model, this.context);
       result.push(...this.role());
       for (const [i, item] of (event.response.output ?? []).entries())
         result.push(...this.finishItem(item, i));
       const annotations = chat.choices[0].message.annotations;
       if (annotations?.length) result.push(this.chunk({ annotations }));
-      result.push(this.chunk({}, this.tools.length ? "tool_calls" : "stop"));
+      result.push(this.chunk({}, chat.choices[0].finish_reason));
       if (this.includeUsage && event.response.usage)
         result.push({
           ...this.chunk({}),
@@ -313,7 +348,11 @@ export async function* renderStream(
 ): AsyncIterable<string> {
   const chat =
     format === "chat"
-      ? new ChatStream(model, options.includeUsage === true)
+      ? new ChatStream(
+          model,
+          options.includeUsage === true,
+          options.responseContext,
+        )
       : undefined;
   try {
     for await (const event of events) {
@@ -335,6 +374,7 @@ export async function collectResponse(
   events: AsyncIterable<JsonObject>,
   format: "responses" | "chat",
   model: string,
+  options: RenderStreamOptions = {},
 ): Promise<JsonObject> {
   try {
     for await (const event of events) {
@@ -343,7 +383,7 @@ export async function collectResponse(
       if (event.type === "response.completed")
         return format === "responses"
           ? event.response
-          : responseToChat(event.response, model);
+          : responseToChat(event.response, model, options.responseContext);
     }
   } catch (error) {
     streamError(error);

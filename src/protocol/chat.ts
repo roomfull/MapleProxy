@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ResponseOutputMessage } from "openai/resources/responses/responses";
 import type { JsonObject } from "../auth/runtime.js";
 import { AppError } from "../shared/errors.js";
+import type { ResponseContext } from "./types.js";
 
 // Reserved names carry identity across independent requests; no request registry.
 const encodedPrefix = "_mpn_";
@@ -111,10 +112,19 @@ export function decodeChatName(
     );
   }
 }
-export function chatName(item: JsonObject): string {
+export function chatName(item: JsonObject, context?: ResponseContext): string {
   const name = item.name as string;
   if (typeof name !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(name))
     unsupportedOutput("Invalid tool name in upstream output.");
+  const requested =
+    context?.toolNames.filter(
+      (tool) =>
+        tool.name === name &&
+        (!item.namespace || tool.namespace === item.namespace),
+    ) ?? [];
+  if (requested.length === 1) return requested[0]!.clientName;
+  if (requested.length > 1)
+    unsupportedOutput("Ambiguous tool namespace in upstream output.");
   if (!item.namespace || item.namespace === flatNamespace(name)) {
     if (name.startsWith(encodedPrefix))
       unsupportedOutput(
@@ -139,15 +149,21 @@ export function chatName(item: JsonObject): string {
 export function unsupportedOutput(message: string): never {
   throw new AppError(502, "unsupported_output", message);
 }
-export function chatToolCall(item: JsonObject): JsonObject {
+export function functionArguments(value: string): string {
+  return value.trim() ? value : "{}";
+}
+export function chatToolCall(
+  item: JsonObject,
+  context?: ResponseContext,
+): JsonObject {
   if (typeof item.call_id !== "string" || !item.call_id)
     unsupportedOutput("Tool output is missing call_id.");
-  const name = chatName(item);
+  const name = chatName(item, context);
   if (item.type === "function_call")
     return {
       id: item.call_id,
       type: "function",
-      function: { name, arguments: item.arguments ?? "" },
+      function: { name, arguments: functionArguments(item.arguments ?? "") },
     };
   return {
     id: item.call_id,
@@ -189,6 +205,7 @@ export function chatAnnotation(
 export function responseToChat(
   response: JsonObject,
   model: string,
+  context?: ResponseContext,
 ): JsonObject {
   let content = "",
     refusal = "";
@@ -213,12 +230,20 @@ export function responseToChat(
       item.type === "function_call" ||
       item.type === "custom_tool_call"
     )
-      calls.push(chatToolCall(item));
+      calls.push(chatToolCall(item, context));
     else if (!["reasoning", "web_search_call"].includes(item.type))
       unsupportedOutput(
         `Cannot represent ${item.type} in Chat. Use Responses.`,
       );
   }
+  const legacy = context?.legacyFunctionCall === true;
+  if (
+    legacy &&
+    (calls.length > 1 || calls.some((call) => call.type !== "function"))
+  )
+    unsupportedOutput(
+      "Legacy function_call cannot represent parallel or custom calls.",
+    );
   return {
     id: response.id,
     object: "chat.completion",
@@ -231,10 +256,18 @@ export function responseToChat(
           role: "assistant",
           content: content || null,
           refusal: refusal || null,
-          ...(calls.length ? { tool_calls: calls } : {}),
+          ...(calls.length
+            ? legacy
+              ? { function_call: calls[0]!.function }
+              : { tool_calls: calls }
+            : {}),
           ...(annotations.length ? { annotations } : {}),
         },
-        finish_reason: calls.length ? "tool_calls" : "stop",
+        finish_reason: calls.length
+          ? legacy
+            ? "function_call"
+            : "tool_calls"
+          : "stop",
         logprobs: null,
       },
     ],

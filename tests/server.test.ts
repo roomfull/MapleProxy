@@ -500,6 +500,82 @@ describe("inference rendering and privacy", () => {
       expect(calls.at(-1)?.stream_options).not.toHaveProperty("include_usage");
     }
   });
+  it("renders request-local tool identities and legacy functions through HTTP", async () => {
+    const encoded =
+      "_mpn_" +
+      Buffer.from(JSON.stringify(["workspace", "read"])).toString("base64url");
+    const mock = vi
+      .spyOn(runtime, "requestResponses")
+      .mockImplementation(async ({ body }) => {
+        calls.push(body);
+        return {
+          profileId: "a",
+          status: 200,
+          headers: new Headers(),
+          events: (async function* () {
+            yield {
+              type: "response.completed",
+              response: {
+                id: "r",
+                status: "completed",
+                output: [
+                  {
+                    type: "function_call",
+                    id: "i",
+                    call_id: "c",
+                    name: "read",
+                    arguments: "{}",
+                  },
+                ],
+              },
+            };
+          })(),
+        };
+      });
+    try {
+      for (const stream of [false, true])
+        for (const legacy of [false, true]) {
+          const response = await app.inject({
+            method: "POST",
+            url: "/v1/chat/completions",
+            headers: inference(),
+            payload: {
+              model: "synthetic",
+              messages: [{ role: "user", content: "go" }],
+              stream,
+              ...(legacy
+                ? { functions: [{ name: encoded }] }
+                : {
+                    tools: [{ type: "function", function: { name: encoded } }],
+                  }),
+            },
+          });
+          expect(response.statusCode).toBe(200);
+          if (stream) {
+            expect(response.body).toContain(encoded);
+            expect(response.body).toContain(
+              `"finish_reason":"${legacy ? "function_call" : "tool_calls"}"`,
+            );
+            expect(response.body).toContain("[DONE]");
+          } else {
+            const choice = response.json().choices[0];
+            expect(
+              legacy
+                ? choice.message.function_call.name
+                : choice.message.tool_calls[0].function.name,
+            ).toBe(encoded);
+            expect(choice.finish_reason).toBe(
+              legacy ? "function_call" : "tool_calls",
+            );
+          }
+          expect(calls.at(-1)).not.toHaveProperty("responseContext");
+          expect(calls.at(-1)).not.toHaveProperty("renderOptions");
+          expect(calls.at(-1)).toMatchObject({ stream: true, store: false });
+        }
+    } finally {
+      mock.mockRestore();
+    }
+  });
   it("uses next-request default and records metadata without content", async () => {
     await app.inject({
       method: "POST",
