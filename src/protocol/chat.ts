@@ -208,7 +208,8 @@ export function responseToChat(
   context?: ResponseContext,
 ): JsonObject {
   let content = "",
-    refusal = "";
+    refusal = "",
+    reasoning = "";
   const calls: JsonObject[] = [],
     annotations: JsonObject[] = [];
   for (const item of response.output ?? []) {
@@ -231,7 +232,11 @@ export function responseToChat(
       item.type === "custom_tool_call"
     )
       calls.push(chatToolCall(item, context));
-    else if (!["reasoning", "web_search_call"].includes(item.type))
+    else if (item.type === "reasoning") {
+      for (const part of item.summary ?? [])
+        if (part.type === "summary_text" && typeof part.text === "string")
+          reasoning += part.text;
+    } else if (item.type !== "web_search_call")
       unsupportedOutput(
         `Cannot represent ${item.type} in Chat. Use Responses.`,
       );
@@ -256,6 +261,7 @@ export function responseToChat(
           role: "assistant",
           content: content || null,
           refusal: refusal || null,
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
           ...(calls.length
             ? legacy
               ? { function_call: calls[0]!.function }
@@ -263,15 +269,29 @@ export function responseToChat(
             : {}),
           ...(annotations.length ? { annotations } : {}),
         },
-        finish_reason: calls.length
-          ? legacy
-            ? "function_call"
-            : "tool_calls"
-          : "stop",
+        finish_reason:
+          incompleteFinishReason(response) ??
+          (calls.length ? (legacy ? "function_call" : "tool_calls") : "stop"),
         logprobs: null,
       },
     ],
     ...(response.usage ? { usage: chatUsage(response.usage) } : {}),
     ...(response.service_tier ? { service_tier: response.service_tier } : {}),
   };
+}
+
+/** Known partial endings have protocol finish reasons; unknown ones must fail. */
+export function incompleteFinishReason(
+  response: JsonObject,
+): string | undefined {
+  if (response.status !== "incomplete") return undefined;
+  if (response.incomplete_details?.reason === "max_output_tokens")
+    return "length";
+  if (response.incomplete_details?.reason === "content_filter")
+    return "content_filter";
+  throw new AppError(
+    502,
+    "response_incomplete",
+    "Upstream response has an unknown incomplete reason.",
+  );
 }

@@ -24,6 +24,8 @@ export interface UpstreamResponse {
   status: number;
   headers: Headers;
   events: AsyncIterable<JsonObject>;
+  /** Existing upstream lifetime, also used to bound downstream backpressure. */
+  deadlineAt?: number;
 }
 export interface AccountRuntime {
   listAccounts(): Promise<AccountView[]>;

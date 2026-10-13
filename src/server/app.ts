@@ -8,7 +8,7 @@ import { AppError } from "../shared/errors.js";
 import { SecurityStore } from "./security.js";
 import { ActivityLog } from "./activity.js";
 import { registerAdmin, safeField } from "./routes.js";
-import { writeChunk } from "./streaming.js";
+import { withSseHeartbeat, writeChunk } from "./streaming.js";
 
 export interface AppOptions {
   runtime: AccountRuntime;
@@ -124,6 +124,7 @@ export async function createApp({
         requestId = request.id,
         result: "success" | "error" | "cancelled" = "error",
         code: string | undefined;
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
       const close = () => {
         if (!reply.raw.writableEnded) controller.abort();
       };
@@ -143,6 +144,19 @@ export async function createApp({
         requestId =
           safeField(upstream.headers.get("x-request-id")) ?? requestId;
         reply.header("x-request-id", requestId);
+        if (upstream.deadlineAt !== undefined) {
+          const expire = () =>
+            controller.abort(
+              new AppError(
+                504,
+                "request_timeout",
+                "The upstream request timed out.",
+              ),
+            );
+          const remaining = upstream.deadlineAt - Date.now();
+          if (remaining <= 0) expire();
+          else deadlineTimer = setTimeout(expire, remaining);
+        }
         if (!normalized.stream) {
           const response = await collectResponse(
             upstream.events,
@@ -153,6 +167,17 @@ export async function createApp({
           result = "success";
           return reply.send(response);
         }
+        const stream = withSseHeartbeat(
+          renderStream(
+            upstream.events,
+            format,
+            normalized.body.model,
+            normalized.renderOptions,
+          ),
+          controller.signal,
+        );
+        // Read and validate the first output before committing HTTP 200.
+        const first = await stream.next();
         reply.hijack();
         reply.raw.writeHead(200, {
           ...reply.getHeaders(),
@@ -161,28 +186,41 @@ export async function createApp({
           connection: "keep-alive",
         } as import("node:http").OutgoingHttpHeaders);
         try {
-          for await (const chunk of renderStream(
-            upstream.events,
-            format,
-            normalized.body.model,
-            normalized.renderOptions,
-          ))
+          if (!first.done)
+            await writeChunk(reply.raw, first.value, controller.signal);
+          for await (const chunk of stream)
             await writeChunk(reply.raw, chunk, controller.signal);
           result = "success";
-        } catch (error) {
+        } catch (caught) {
+          const error =
+            controller.signal.reason instanceof AppError
+              ? controller.signal.reason
+              : caught;
           code =
             error instanceof AppError ? safeField(error.code) : "stream_failed";
-          if (!controller.signal.aborted && !reply.raw.destroyed)
-            await writeChunk(
-              reply.raw,
-              `event: error\ndata: ${JSON.stringify(errorEnvelope(error, requestId))}\n\n`,
-              controller.signal,
-            ).catch(() => {});
+          const frame = `event: error\ndata: ${JSON.stringify(errorEnvelope(error, requestId))}\n\n`;
+          if (
+            controller.signal.aborted &&
+            code === "request_timeout" &&
+            !reply.raw.destroyed
+          ) {
+            // A timed-out blocked socket cannot drain a further error frame.
+            if (reply.raw.writableNeedDrain) reply.raw.destroy();
+            else reply.raw.write(frame);
+          } else if (!controller.signal.aborted && !reply.raw.destroyed)
+            await writeChunk(reply.raw, frame, controller.signal).catch(
+              () => {},
+            );
         } finally {
+          await stream.return(undefined).catch(() => {});
           reply.raw.end();
         }
         return reply;
-      } catch (error) {
+      } catch (caught) {
+        const error =
+          controller.signal.reason instanceof AppError
+            ? controller.signal.reason
+            : caught;
         code =
           error instanceof AppError ? safeField(error.code) : "internal_error";
         if (error instanceof AppError) {
@@ -197,7 +235,15 @@ export async function createApp({
         }
         throw error;
       } finally {
-        if (controller.signal.aborted) result = "cancelled";
+        if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+        if (
+          controller.signal.aborted &&
+          !(
+            controller.signal.reason instanceof AppError &&
+            controller.signal.reason.code === "request_timeout"
+          )
+        )
+          result = "cancelled";
         controller.abort();
         request.raw.off("aborted", close);
         reply.raw.off("close", close);

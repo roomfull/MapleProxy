@@ -15,3 +15,8 @@ source is modified; UTF-8 framing and abortable body reads remain SDK-owned.
 The low-level export must be revalidated when upgrading the SDK. Source reference:
 https://github.com/openai/openai-node/blob/main/src/core/streaming.ts (checked
 2026-10-13); installed locked source/declarations were the compatibility authority.
+Transport lifetime metadata (2026-10-14): requestResponseStream returns deadlineAt
+from the same timestamp/default180s or configured timeout used for its existing
+headers/body deadline. No deadline reset at headers and no timeout policy change.
+MapleProxy uses this fixed numeric metadata to bound downstream drain waits; no
+auth/account/policy behavior or SDK dependency source is changed.

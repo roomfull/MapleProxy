@@ -321,7 +321,7 @@ it("replays complete native tool and encrypted reasoning output over SDK multi-t
   });
 });
 
-it.each(["failed", "incomplete", "eof", "error"])(
+it.each(["failed", "eof", "error"])(
   "never reports success after %s streams, through both official downstream SDKs",
   async (failure) => {
     const events: JsonObject[] = [
@@ -414,6 +414,54 @@ it.each(["failed", "incomplete", "eof", "error"])(
         "synthetic-private-detail",
       );
     }
+  },
+);
+
+it.each(["max_output_tokens", "content_filter"])(
+  "retains incomplete %s through official SDKs and real upstream sockets",
+  async (reason) => {
+    const response = {
+      ...completed([message("partial🍁")]),
+      status: "incomplete",
+      incomplete_details: { reason },
+    };
+    handler = async (_body, downstream) =>
+      fragmented(downstream, [
+        {
+          type: "response.output_text.delta",
+          item_id: "msg_local",
+          output_index: 0,
+          content_index: 0,
+          delta: "partial",
+        },
+        { type: "response.incomplete", response },
+      ]);
+    const native = await client.responses.create({
+      model: "test-model",
+      input: "x",
+    });
+    expect(native).toMatchObject({
+      status: "incomplete",
+      incomplete_details: { reason },
+      output: response.output,
+    });
+    const chat = await client.chat.completions.create({
+      model: "test-model",
+      messages: [{ role: "user", content: "x" }],
+    });
+    expect(chat.choices[0]).toMatchObject({
+      finish_reason:
+        reason === "max_output_tokens" ? "length" : "content_filter",
+      message: { content: "partial🍁" },
+    });
+    const stream = await client.responses.create({
+      model: "test-model",
+      input: "x",
+      stream: true,
+    });
+    const received: JsonObject[] = [];
+    for await (const event of stream) received.push(event);
+    expect(received.at(-1)).toEqual({ type: "response.incomplete", response });
   },
 );
 

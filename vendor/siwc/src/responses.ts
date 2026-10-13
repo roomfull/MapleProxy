@@ -14,7 +14,9 @@ export async function requestResponseStream(
   config: Pick<ChatGPTConfig, "fetch" | "timeoutMs"> = {},
   onClose: () => void = () => {},
 ) {
-  const deadline = AbortSignal.timeout(config.timeoutMs ?? 180_000);
+  const timeoutMs = config.timeoutMs ?? 180_000;
+  const deadlineAt = Date.now() + timeoutMs;
+  const deadline = AbortSignal.timeout(timeoutMs);
   const streamController = new AbortController();
   const requestSignal = AbortSignal.any([
     signal,
@@ -40,7 +42,7 @@ export async function requestResponseStream(
     organization: null,
     project: null,
     maxRetries: 0,
-    timeout: config.timeoutMs ?? 180_000,
+    timeout: timeoutMs,
     logLevel: "off",
     fetch: config.fetch,
     fetchOptions: { redirect: "error" },
@@ -186,7 +188,7 @@ export async function requestResponseStream(
       }),
     };
     requestSignal.addEventListener("abort", onAbort, { once: true });
-    return { status: response.status, headers: response.headers, events };
+    return { status: response.status, headers: response.headers, events, deadlineAt };
   } catch (e) {
     throw sanitize(e);
   }

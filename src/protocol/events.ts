@@ -7,11 +7,39 @@ import {
   responseToChat,
   unsupportedOutput,
   functionArguments,
+  incompleteFinishReason,
 } from "./chat.js";
 
 export interface RenderStreamOptions {
   includeUsage?: boolean;
   responseContext?: ResponseContext;
+  onTerminal?: (outcome: ResponseOutcome) => void;
+}
+
+/** Fixed metadata only: no response body or upstream reason strings. */
+export interface ResponseOutcome {
+  status: "completed" | "incomplete";
+  incompleteReason?: "max_output_tokens" | "content_filter" | "unknown";
+}
+
+function terminal(event: JsonObject): boolean {
+  return (
+    event.type === "response.completed" || event.type === "response.incomplete"
+  );
+}
+function reportTerminal(event: JsonObject, options: RenderStreamOptions): void {
+  if (!terminal(event)) return;
+  if (event.response?.status === "incomplete") {
+    const reason = event.response.incomplete_details?.reason;
+    options.onTerminal?.({
+      status: "incomplete",
+      incompleteReason:
+        reason === "max_output_tokens" || reason === "content_filter"
+          ? reason
+          : "unknown",
+    });
+  } else if (event.response?.status === "completed")
+    options.onTerminal?.({ status: "completed" });
 }
 
 function terminalError(event: JsonObject): AppError | undefined {
@@ -30,8 +58,10 @@ function terminalError(event: JsonObject): AppError | undefined {
       response?.error?.message ?? "Upstream response failed.",
     );
   if (
-    event.type === "response.incomplete" ||
-    (event.type === "response.completed" && response?.status !== "completed")
+    terminal(event) &&
+    (event.type === "response.incomplete"
+      ? response?.status !== "incomplete"
+      : response?.status !== "completed")
   )
     return new AppError(
       502,
@@ -77,6 +107,7 @@ class ChatStream {
   private itemTools = new Map<string, ToolState>();
   private outputTools = new Map<number, ToolState>();
   private text = new Map<string, string>();
+  private summaries = new Map<string, string>();
   constructor(
     private readonly model: string,
     private readonly includeUsage: boolean,
@@ -243,11 +274,31 @@ class ChatStream {
           ...this.finishText(key, refusal ? part.refusal : part.text, refusal),
         );
       }
-    } else if (!["reasoning", "web_search_call"].includes(item.type))
+    } else if (item.type === "reasoning") {
+      for (const [i, part] of (item.summary ?? []).entries())
+        if (part.type === "summary_text")
+          result.push(...this.summaryText(outputIndex, i, part.text, true));
+    } else if (item.type !== "web_search_call")
       unsupportedOutput(
         `Cannot represent ${item.type} in Chat. Use Responses.`,
       );
     return result;
+  }
+  private summaryText(
+    outputIndex: number,
+    summaryIndex: number,
+    value: string,
+    done: boolean,
+  ): JsonObject[] {
+    const key = JSON.stringify([outputIndex, summaryIndex]),
+      prior = this.summaries.get(key) ?? "";
+    if (typeof value !== "string" || (done && !value.startsWith(prior)))
+      invalidStream(
+        "Completed reasoning summary disagrees with streamed deltas.",
+      );
+    const delta = done ? value.slice(prior.length) : value;
+    this.summaries.set(key, prior + delta);
+    return delta ? [this.chunk({ reasoning_content: delta })] : [];
   }
   accept(event: JsonObject): JsonObject[] {
     const result: JsonObject[] = [];
@@ -315,12 +366,30 @@ class ChatStream {
               refusal,
             )),
       );
+    } else if (
+      [
+        "response.reasoning_summary_text.delta",
+        "response.reasoning_summary_text.done",
+        "response.reasoning_summary_part.added",
+        "response.reasoning_summary_part.done",
+      ].includes(event.type)
+    ) {
+      if (!event.part || event.part.type === "summary_text")
+        result.push(
+          ...this.role(),
+          ...this.summaryText(
+            event.output_index,
+            event.summary_index,
+            event.delta ?? event.text ?? event.part?.text,
+            !event.type.endsWith(".delta"),
+          ),
+        );
     } else if (event.type === "response.output_item.done") {
       result.push(
         ...this.role(),
         ...this.finishItem(event.item, event.output_index),
       );
-    } else if (event.type === "response.completed") {
+    } else if (terminal(event)) {
       // Validate the full native output before emitting a successful finish.
       const chat = responseToChat(event.response, this.model, this.context);
       result.push(...this.role());
@@ -354,13 +423,25 @@ export async function* renderStream(
           options.responseContext,
         )
       : undefined;
+  let emitted = false;
   try {
     for await (const event of events) {
+      reportTerminal(event, options);
       const error = terminalError(event);
-      if (format === "responses") yield sse(event, true);
+      if (error && !emitted) throw error;
+      if (format === "responses") {
+        emitted = true;
+        yield sse(event, true);
+      }
       if (error) throw error;
-      if (chat) for (const chunk of chat.accept(event)) yield sse(chunk);
-      if (event.type === "response.completed") {
+      if (chat) {
+        if (terminal(event)) incompleteFinishReason(event.response);
+        for (const chunk of chat.accept(event)) {
+          emitted = true;
+          yield sse(chunk);
+        }
+      }
+      if (terminal(event)) {
         if (chat) yield "data: [DONE]\n\n";
         return;
       }
@@ -378,9 +459,10 @@ export async function collectResponse(
 ): Promise<JsonObject> {
   try {
     for await (const event of events) {
+      reportTerminal(event, options);
       const error = terminalError(event);
       if (error) throw error;
-      if (event.type === "response.completed")
+      if (terminal(event))
         return format === "responses"
           ? event.response
           : responseToChat(event.response, model, options.responseContext);

@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createAccountRuntime } from "../src/auth/runtime.js";
 import { encryption, fixture, streamResponse } from "./helpers.js";
-test("the production SSE parser preserves explicit native error payloads before failing without success", async () => {
+test("the production SSE parser stages initial native errors before HTTP commitment", async () => {
   const event = {
     type: "error",
     code: "invalid_token",
@@ -45,8 +45,7 @@ test("the production SSE parser preserves explicit native error payloads before 
           frames.push(frame);
       })(),
     ).rejects.toMatchObject({ code: "upstream_stream_error" });
-    expect(frames).toHaveLength(1);
-    expect(JSON.parse(frames[0]!.split("data: ")[1]!)).toEqual(event);
+    expect(frames).toHaveLength(0);
     expect(frames.join("")).not.toContain("[DONE]");
     for (const log of logs) expect(log).not.toHaveBeenCalled();
   } finally {
@@ -363,6 +362,29 @@ test("body timeout remains active after headers and never retries", async () => 
     }
   }).rejects.toMatchObject({ code: "request_timeout" });
   expect(calls).toBe(1);
+});
+
+test("exposes the existing body deadline without restarting it at headers", async () => {
+  let fetchAt = 0;
+  const { runtime } = await setup(async () => {
+    fetchAt = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return streamResponse();
+  }, 1000);
+  const started = Date.now();
+  const result = await runtime.requestResponses({
+    body: { model: "m", input: "x" },
+  });
+  try {
+    const deadline = (result as typeof result & { deadlineAt?: number })
+      .deadlineAt;
+    expect(deadline).toBeTypeOf("number");
+    expect(deadline).toBeGreaterThanOrEqual(started + 1000);
+    expect(deadline).toBeLessThanOrEqual(fetchAt + 1000);
+    expect(deadline).toBeLessThan(Date.now() + 1000);
+  } finally {
+    await result.events[Symbol.asyncIterator]().return?.();
+  }
 });
 test("two calls needing refresh perform one persisted rotation", async () => {
   let refreshes = 0;

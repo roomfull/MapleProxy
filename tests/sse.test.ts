@@ -73,7 +73,7 @@ it.each([1, 2, 3, 7, 53])(
     expect(result.at(-1)).toBe("data: [DONE]\n\n");
   },
 );
-it("detects premature transport EOF and incomplete terminal after SDK-parsed deltas", async () => {
+it("detects premature transport EOF and maps known incomplete after SDK-parsed deltas", async () => {
   const delta = {
     type: "response.output_text.delta",
     item_id: "m",
@@ -103,7 +103,7 @@ it("detects premature transport EOF and incomplete terminal after SDK-parsed del
       "chat",
       "test",
     ),
-  ).rejects.toMatchObject({ code: "response_incomplete" });
+  ).resolves.toMatchObject({ choices: [{ finish_reason: "length" }] });
 });
 it("preserves call IDs and mixed text/tool payloads through bytewise SDK parsing", async () => {
   const tool = {

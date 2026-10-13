@@ -117,6 +117,8 @@ export interface ChatGPTClient {
     status: number;
     headers: Headers;
     events: AsyncIterable<Record<string, any>>;
+    /** MapleProxy transport metadata: same deadline that governs headers/body. */
+    deadlineAt: number;
   }>;
   streamResponse(options: StreamResponseOptions): Promise<{ text: string }>;
 }

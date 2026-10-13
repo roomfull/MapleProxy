@@ -437,7 +437,7 @@ describe("inference rendering and privacy", () => {
       for (const id of ["upstream-synthetic-id", "unsafe id", undefined]) {
         for (const terminal of [
           "response.failed",
-          "response.incomplete",
+          "invalid_completed",
           "eof",
         ]) {
           const mock = vi.spyOn(runtime, "requestResponses").mockResolvedValue({
@@ -447,9 +447,15 @@ describe("inference rendering and privacy", () => {
             events: (async function* () {
               if (terminal !== "eof")
                 yield {
-                  type: terminal,
+                  type:
+                    terminal === "invalid_completed"
+                      ? "response.completed"
+                      : terminal,
                   response: {
-                    status: terminal.slice(9),
+                    status:
+                      terminal === "invalid_completed"
+                        ? "in_progress"
+                        : terminal.slice(9),
                     error: { code: "synthetic_failure" },
                   },
                 };

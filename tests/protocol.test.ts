@@ -1284,7 +1284,9 @@ describe("response adapters", () => {
         ],
       },
     });
-    expect(JSON.stringify(response)).not.toContain("private summary");
+    expect(response.choices[0].message.reasoning_content).toBe(
+      "private summary",
+    );
   });
   it.each(["responses", "chat"] as const)(
     "rejects premature EOF for %s",
@@ -1312,7 +1314,7 @@ describe("response adapters", () => {
       ).rejects.toMatchObject({ code: "stream_interrupted" });
     },
   );
-  it.each(["response.failed", "response.incomplete", "error"])(
+  it.each(["response.failed", "error"])(
     "throws %s after deltas without a normal success terminator",
     async (type) => {
       const emitted: string[] = [];
