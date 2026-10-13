@@ -186,9 +186,11 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
   );
   const subscribers = new Set<(state: SessionState) => void>();
   const requests = new Map<string, Set<AbortController>>();
+  const disconnectingProfiles = new Set<string>();
   let state: SessionState = { status: "disconnected", sharing: false };
   let pendingSignIn: AbortController | undefined;
   let pendingSignInProfileId: string | undefined;
+  let pendingSignInTargetsDefault = false;
   let changingProfile = false;
   let epoch = 0;
   const snapshot = () => structuredClone(state);
@@ -353,6 +355,12 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
     const profileId = requestedId ?? saved.activeProfileId;
     if (!profileId)
       throw new ChatGPTError("sign_in_required", "Select a connected account.");
+    // Only validated, saved profile IDs may own registered requests. This also
+    // lets logout cancel a known target before waiting behind refresh's lock.
+    if (!saved.profiles.some((profile) => profile.id === profileId))
+      throw new ChatGPTError("profile_not_found", "Account not found.");
+    if (disconnectingProfiles.has(profileId))
+      throw new ChatGPTError("cancelled", "The account is being disconnected.");
     const controller = new AbortController();
     const group = requests.get(profileId) ?? new Set<AbortController>();
     requests.set(profileId, group);
@@ -454,6 +462,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
       const controller = new AbortController();
       pendingSignIn = controller;
       pendingSignInProfileId = options.profileId;
+      pendingSignInTargetsDefault = !options.newProfile && !options.profileId;
       const operation = ++epoch;
       const signals = [controller.signal, AbortSignal.timeout(10 * 60_000)];
       if (options.signal) signals.push(options.signal);
@@ -651,6 +660,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
         if (pendingSignIn === controller) {
           pendingSignIn = undefined;
           pendingSignInProfileId = undefined;
+          pendingSignInTargetsDefault = false;
         }
       }
     },
@@ -719,7 +729,23 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
         );
       changingProfile = true;
       let revocationFailed = false;
+      let disconnectTarget: string | undefined;
+      const cancelTarget = (id: string, defaultProfileId?: string) => {
+        disconnectTarget = id;
+        disconnectingProfiles.add(id);
+        cancelRequests(id);
+        if (
+          pendingSignInProfileId === id ||
+          (pendingSignInTargetsDefault &&
+            !pendingSignInProfileId &&
+            defaultProfileId === id)
+        )
+          pendingSignIn?.abort();
+      };
       try {
+        // A registered request proves this ID was validated from the store.
+        // Do not abort its refresh grant: rotation must still finish persistence.
+        if (profileId && requests.has(profileId)) cancelTarget(profileId);
         const saved = await store.withLock(async () => {
           const latest = (await store.read()) ?? emptyState();
           const profile = profileId
@@ -727,9 +753,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
             : selectedProfile(latest);
           if (profileId && !profile)
             throw new ChatGPTError("profile_not_found", "Account not found.");
-          if (profile && pendingSignInProfileId === profile.id)
-            pendingSignIn?.abort();
-          if (profile) cancelRequests(profile.id);
+          if (profile) cancelTarget(profile.id, latest.activeProfileId);
           if (profile) {
             if (profile.credentials) {
               try {
@@ -762,6 +786,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
         });
         if (error) throw error;
       } finally {
+        if (disconnectTarget) disconnectingProfiles.delete(disconnectTarget);
         changingProfile = false;
       }
     },

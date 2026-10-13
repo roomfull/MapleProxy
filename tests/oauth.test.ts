@@ -7,6 +7,101 @@ import { join } from "node:path";
 import { createAccountRuntime } from "../src/auth/runtime.js";
 import { encryption, fixture, streamResponse } from "./helpers.js";
 import { ConnectionStore } from "../vendor/siwc/src/storage.js";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+test.each([
+  { kind: "implicit-default", options: {} },
+  { kind: "explicit B", options: { profileId: "b" } },
+  { kind: "new profile", options: { newProfile: true } },
+])(
+  "logout before preparation only cancels matching $kind OAuth",
+  async ({ kind, options }) => {
+    const f = await fixture();
+    cleanups.push(f.cleanup);
+    const original = fsPromises.mkdir;
+    let delayed = false;
+    let paused!: () => void;
+    const ready = new Promise<void>((r) => (paused = r));
+    let resume!: () => void;
+    const gate = new Promise<void>((r) => (resume = r));
+    let browsers = 0;
+    let auth: URL;
+    const clientId =
+      kind === "explicit B"
+        ? "client_b"
+        : kind === "new profile"
+          ? "issued_client"
+          : "client_a";
+    const subject =
+      kind === "explicit B"
+        ? "b"
+        : kind === "new profile"
+          ? "new-subject"
+          : "a";
+    const runtime = createAccountRuntime({
+      dataDir: f.dataDir,
+      encryption,
+      openBrowser: async (url) => {
+        browsers++;
+        auth = new URL(url);
+        await callback(auth, { client_id: clientId });
+      },
+      fetch: async (url) => {
+        if (String(url).includes("openid-configuration")) return discovery();
+        if (String(url).endsWith("/jwks")) return Response.json(jwks);
+        if (String(url).endsWith("/revoke"))
+          return new Response("", { status: 200 });
+        if (String(url).endsWith("/token"))
+          return Response.json({
+            id_token: await token(
+              clientId,
+              subject,
+              auth!.searchParams.get("nonce")!,
+            ),
+            access_token: "new-access",
+            refresh_token: "new-refresh",
+            token_type: "Bearer",
+            scope: "openid offline_access chatgpt.tokens.use.direct",
+            expires_in: 3600,
+          });
+        throw new Error("unexpected");
+      },
+    });
+    fsPromises.mkdir = (async (...args: Parameters<typeof original>) => {
+      if (!delayed && String(args[0]) === f.dataDir) {
+        delayed = true;
+        paused();
+        await gate;
+      }
+      return Reflect.apply(original, fsPromises, args);
+    }) as typeof original;
+    syncBuiltinESMExports();
+    const pending = runtime.signIn(options).then(
+      () => ({ ok: true }),
+      (error) => ({ ok: false, error }),
+    );
+    try {
+      await ready;
+      await runtime.disconnect("a");
+      resume();
+      if (kind === "implicit-default") {
+        expect(await pending).toMatchObject({
+          ok: false,
+          error: { code: "cancelled" },
+        });
+        expect(browsers).toBe(0);
+      } else {
+        expect(await pending).toMatchObject({ ok: true });
+        expect(browsers).toBe(1);
+      }
+    } finally {
+      resume();
+      fsPromises.mkdir = original;
+      syncBuiltinESMExports();
+      await pending;
+    }
+  },
+);
 const issuer = "https://auth.openai.com";
 test.each(["a", "unknown", "b"])(
   "disconnect %s affects OAuth only when targeting B",

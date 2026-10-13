@@ -3,6 +3,100 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createAccountRuntime } from "../src/auth/runtime.js";
 import { encryption, fixture, streamResponse } from "./helpers.js";
+test("logout during locked refresh prevents inference and revokes the persisted successor", async () => {
+  let received!: () => void;
+  const started = new Promise<void>((r) => (received = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let inferenceCalls = 0;
+  let persisted = false;
+  let revoked: string | null = null;
+  const { runtime, store } = await setup(
+    async (url, init) => {
+      if (String(url).includes("openid-configuration"))
+        return Response.json({
+          issuer: "https://auth.openai.com",
+          authorization_endpoint: "https://auth.openai.com/authorize",
+          token_endpoint: "https://auth.openai.com/token",
+          jwks_uri: "https://auth.openai.com/jwks",
+          revocation_endpoint: "https://auth.openai.com/revoke",
+        });
+      if (String(url).endsWith("/token")) {
+        received();
+        await gate;
+        return Response.json({
+          access_token: "successor-access",
+          refresh_token: "successor-refresh",
+          token_type: "Bearer",
+          expires_in: 3600,
+        });
+      }
+      if (String(url).endsWith("/revoke")) {
+        revoked = (init!.body as URLSearchParams).get("token");
+        return new Response("", { status: 200 });
+      }
+      inferenceCalls++;
+      return streamResponse();
+    },
+    undefined,
+    Date.now() - 100,
+  );
+  // Observe the actual encrypted-write boundary used by every store instance.
+  const { ConnectionStore } = await import("../vendor/siwc/src/storage.js");
+  const write = ConnectionStore.prototype.write;
+  ConnectionStore.prototype.write = async function (saved) {
+    if (
+      saved.profiles.find((p) => p.id === "a")?.credentials?.refreshToken ===
+      "successor-refresh"
+    )
+      persisted = true;
+    return write.call(this, saved);
+  };
+  const pending = runtime
+    .requestResponses({ body: { model: "m", input: "x" } })
+    .then(
+      async (response) => {
+        await response.events[Symbol.asyncIterator]().return?.();
+        return { ok: true };
+      },
+      (error) => ({ ok: false, error }),
+    );
+  await started;
+  const logout = runtime.disconnect("a");
+  const following = runtime
+    .requestResponses({ body: { model: "m", input: "following" } })
+    .then(
+      async (response) => {
+        await response.events[Symbol.asyncIterator]().return?.();
+        return { ok: true };
+      },
+      (error) => ({ ok: false, error }),
+    );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  release();
+  try {
+    await logout;
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: { code: "cancelled" },
+    });
+    expect(await following).toMatchObject({ ok: false });
+    expect(inferenceCalls).toBe(0);
+    expect(persisted).toBe(true);
+    expect(revoked).toBe("successor-refresh");
+    const saved = await store.withLock(() => store.read());
+    expect(saved!.profiles.find((p) => p.id === "a")).toMatchObject({
+      status: "disconnected",
+    });
+    expect(
+      saved!.profiles.find((p) => p.id === "a")!.credentials,
+    ).toBeUndefined();
+  } finally {
+    ConnectionStore.prototype.write = write;
+    release();
+    await Promise.allSettled([logout, pending, following]);
+  }
+});
 test("return promptly aborts transport while next awaits a stalled SSE body", async () => {
   const caller = new AbortController();
   let transport: AbortSignal | undefined;
