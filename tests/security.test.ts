@@ -15,6 +15,22 @@ async function fixture() {
   return { dir, store: new SecurityStore(dir) };
 }
 describe("local security store", () => {
+  it("accepts a six-character password and rejects lengths outside 6–1024", async () => {
+    const { dir, store } = await fixture();
+    await store.setPassword("654321");
+    const restored = new SecurityStore(dir);
+    expect(await restored.authenticate("654321")).toMatchObject({
+      token: expect.any(String),
+      csrfToken: expect.any(String),
+    });
+    for (const invalid of ["12345", "x".repeat(1025)]) {
+      await expect(restored.setPassword(invalid)).rejects.toMatchObject({
+        code: "invalid_password",
+        message: "密码长度应为 6–1024 个字符。",
+      });
+    }
+    expect(await restored.verifyPassword("654321")).toBe(true);
+  });
   it("has no HTTP-style initial password and persists only salted digests", async () => {
     const { dir, store } = await fixture();
     expect(await store.configured()).toBe(false);

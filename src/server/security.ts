@@ -56,11 +56,11 @@ export class SecurityStore {
     return !!(await this.read()).password;
   }
   async setPassword(password: string): Promise<void> {
-    if (password.length < 12 || password.length > 1024)
+    if (password.length < 6 || password.length > 1024)
       throw new AppError(
         400,
         "invalid_password",
-        "密码长度应为 12–1024 个字符。",
+        "密码长度应为 6–1024 个字符。",
       );
     const salt = random(),
       hash = ((await derive(password, salt, 64)) as Buffer).toString("hex");

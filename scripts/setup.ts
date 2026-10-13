@@ -71,7 +71,7 @@ try {
     );
   const password = args.includes("--password-stdin")
     ? await stdinPassword()
-    : await hidden("管理密码（至少 12 个字符，输入隐藏）：");
+    : await hidden("管理密码（至少 6 个字符，输入隐藏）：");
   if (
     !args.includes("--password-stdin") &&
     password !== (await hidden("再次输入管理密码："))
