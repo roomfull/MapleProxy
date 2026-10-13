@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ResponseOutputMessage } from "openai/resources/responses/responses";
 import type { JsonObject } from "../auth/runtime.js";
 import { AppError } from "../shared/errors.js";
 
@@ -9,6 +10,35 @@ export function flatNamespace(name: string): string {
   return (
     flatPrefix + createHash("sha256").update(name).digest("hex").slice(0, 32)
   );
+}
+/** Chat history uses the SDK's full output-message shape to retain rich parts. */
+export function assistantHistory(
+  content: JsonObject[],
+  position: number,
+): ResponseOutputMessage {
+  const parts: ResponseOutputMessage["content"] = content.map((part) => {
+    if (part.type === "output_text")
+      return {
+        type: "output_text",
+        text: part.text,
+        annotations: part.annotations ?? [],
+      };
+    if (part.type === "refusal")
+      return { type: "refusal", refusal: part.refusal };
+    requestError("messages.content", "Unsupported assistant history content.");
+  });
+  return {
+    type: "message",
+    role: "assistant",
+    status: "completed",
+    id:
+      "msg_mapleproxy_" +
+      createHash("sha256")
+        .update(JSON.stringify([position, parts]))
+        .digest("hex")
+        .slice(0, 32),
+    content: parts,
+  };
 }
 export function requestError(
   param: string,

@@ -1,6 +1,8 @@
 import type { JsonObject } from "../auth/runtime.js";
+import type { RenderStreamOptions } from "./events.js";
 import {
   assertNativeNamespace,
+  assistantHistory,
   decodeChatName,
   flatNamespace,
   nativeName,
@@ -66,6 +68,7 @@ const chatFields = new Set([
   "parallel_tool_calls",
   "reasoning_effort",
   "response_format",
+  "verbosity",
   "service_tier",
   "stream_options",
   "prompt_cache_key",
@@ -230,6 +233,7 @@ function nativeInput(value: unknown): JsonObject[] {
         nativeName(item.name, `${param}.name`);
         if (item.namespace && item.namespace !== flatNamespace(item.name))
           assertNativeNamespace(item.namespace, `${param}.namespace`);
+        else item.namespace = flatNamespace(item.name);
       } else string(item.call_id, `${param}.call_id`);
       if (typeof item.output !== "string")
         array(item.output, `${param}.output`).forEach((part, j) =>
@@ -392,11 +396,15 @@ function chatInput(value: unknown): JsonObject[] {
       );
     }
     if (content.length)
-      inputs.push({
-        type: "message",
-        role: message.role === "system" ? "developer" : message.role,
-        content,
-      });
+      inputs.push(
+        message.role === "assistant"
+          ? assistantHistory(content, i)
+          : {
+              type: "message",
+              role: message.role === "system" ? "developer" : message.role,
+              content,
+            },
+      );
     if (message.tool_calls !== undefined) {
       if (message.role !== "assistant")
         requestError(
@@ -535,7 +543,12 @@ function choice(value: unknown, format: "responses" | "chat"): unknown {
 export function normalizeRequest(
   input: unknown,
   format: "responses" | "chat",
-): { body: JsonObject; stream: boolean; ignoredParams: string[] } {
+): {
+  body: JsonObject;
+  stream: boolean;
+  ignoredParams: string[];
+  renderOptions: RenderStreamOptions;
+} {
   const source = object(input, "body");
   const model = string(source.model, "model");
   if (!model.trim()) requestError("model", "model must not be blank.");
@@ -554,7 +567,8 @@ export function normalizeRequest(
     requestError("body", "Request must be a JSON object.");
   }
   const body: JsonObject = { model, store: false, stream: true },
-    ignoredParams: string[] = [];
+    ignoredParams: string[] = [],
+    renderOptions: RenderStreamOptions = { includeUsage: false };
   for (const [key, value] of Object.entries(copied)) {
     if (["model", "store", "stream"].includes(key)) continue;
     if (ordinary.has(key)) {
@@ -596,6 +610,7 @@ export function normalizeRequest(
         "tool_choice",
         "reasoning_effort",
         "response_format",
+        "verbosity",
       ].includes(key)
     )
       continue;
@@ -636,6 +651,8 @@ export function normalizeRequest(
         "unsupported_parameter",
       );
   }
+  if (format === "chat" && copied.verbosity !== undefined)
+    body.text = { ...body.text, verbosity: copied.verbosity };
   if (
     body.parallel_tool_calls !== undefined &&
     typeof body.parallel_tool_calls !== "boolean"
@@ -714,9 +731,11 @@ export function normalizeRequest(
           "Unsupported stream option.",
           "unsupported_parameter",
         );
+    if (format === "chat")
+      renderOptions.includeUsage = options.include_usage === true;
     body.stream_options = Object.fromEntries(
       Object.entries(options).filter(([key]) => key !== "include_usage"),
     );
   }
-  return { body, stream: source.stream === true, ignoredParams };
+  return { body, stream: source.stream === true, ignoredParams, renderOptions };
 }

@@ -7,6 +7,10 @@ import {
   unsupportedOutput,
 } from "./chat.js";
 
+export interface RenderStreamOptions {
+  includeUsage?: boolean;
+}
+
 function terminalError(event: JsonObject): AppError | undefined {
   if (event.type === "error")
     return new AppError(
@@ -69,7 +73,10 @@ class ChatStream {
   private itemTools = new Map<string, ToolState>();
   private outputTools = new Map<number, ToolState>();
   private text = new Map<string, string>();
-  constructor(private readonly model: string) {}
+  constructor(
+    private readonly model: string,
+    private readonly includeUsage: boolean,
+  ) {}
   private chunk(delta: JsonObject, finish: string | null = null): JsonObject {
     return {
       id: this.response.id,
@@ -77,6 +84,7 @@ class ChatStream {
       created: this.response.created_at,
       model: this.response.model ?? this.model,
       choices: [{ index: 0, delta, finish_reason: finish, logprobs: null }],
+      ...(this.includeUsage ? { usage: null } : {}),
     };
   }
   private role(): JsonObject[] {
@@ -286,7 +294,7 @@ class ChatStream {
       const annotations = chat.choices[0].message.annotations;
       if (annotations?.length) result.push(this.chunk({ annotations }));
       result.push(this.chunk({}, this.tools.length ? "tool_calls" : "stop"));
-      if (event.response.usage)
+      if (this.includeUsage && event.response.usage)
         result.push({
           ...this.chunk({}),
           choices: [],
@@ -301,8 +309,12 @@ export async function* renderStream(
   events: AsyncIterable<JsonObject>,
   format: "responses" | "chat",
   model: string,
+  options: RenderStreamOptions = {},
 ): AsyncIterable<string> {
-  const chat = format === "chat" ? new ChatStream(model) : undefined;
+  const chat =
+    format === "chat"
+      ? new ChatStream(model, options.includeUsage === true)
+      : undefined;
   try {
     for await (const event of events) {
       const error = terminalError(event);

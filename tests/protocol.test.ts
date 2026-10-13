@@ -38,6 +38,154 @@ function chunks(values: string[]) {
 }
 
 describe("request normalization", () => {
+  it("merges Chat verbosity with structured response format", () => {
+    const result = normalizeRequest(
+      {
+        model: "test",
+        messages: [{ role: "user", content: "answer" }],
+        verbosity: "low",
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "answer",
+            schema: { type: "object" },
+            strict: true,
+          },
+        },
+      },
+      "chat",
+    );
+    expect(result.body.text).toEqual({
+      verbosity: "low",
+      format: {
+        type: "json_schema",
+        name: "answer",
+        schema: { type: "object" },
+        strict: true,
+      },
+    });
+    expect(result.body.verbosity).toBeUndefined();
+    expect(() =>
+      normalizeRequest(
+        {
+          model: "test",
+          messages: [{ role: "user", content: "x" }],
+          verbosity: "invented",
+        },
+        "chat",
+      ),
+    ).toThrowError(expect.objectContaining({ status: 400 }));
+  });
+  it.each([undefined, false, true])(
+    "keeps include_usage=%s as downstream metadata",
+    (includeUsage) => {
+      const result = normalizeRequest(
+        {
+          model: "test",
+          messages: [{ role: "user", content: "x" }],
+          stream: true,
+          ...(includeUsage === undefined
+            ? {}
+            : {
+                stream_options: {
+                  include_usage: includeUsage,
+                  include_obfuscation: false,
+                },
+              }),
+        },
+        "chat",
+      );
+      expect(result.renderOptions).toEqual({
+        includeUsage: includeUsage === true,
+      });
+      expect(result.body.renderOptions).toBeUndefined();
+      expect(result.body.stream_options?.include_usage).toBeUndefined();
+      if (includeUsage !== undefined)
+        expect(result.body.stream_options).toEqual({
+          include_obfuscation: false,
+        });
+    },
+  );
+  it("routes flat named unpaired function outputs with the namespace of their definition", () => {
+    const result = normalizeRequest(
+      {
+        model: "test",
+        input: [
+          { type: "function_call_output", name: "f", output: "notice" },
+          {
+            type: "function_call_output",
+            name: "f",
+            namespace: "native",
+            output: "native notice",
+          },
+        ],
+        tools: [{ type: "function", name: "f", parameters: {} }],
+      },
+      "responses",
+    ).body;
+    expect(result.input[0]).toEqual({
+      type: "function_call_output",
+      name: "f",
+      namespace: result.tools[0].name,
+      output: "notice",
+    });
+    expect(result.input[1]).toEqual({
+      type: "function_call_output",
+      name: "f",
+      namespace: "native",
+      output: "native notice",
+    });
+  });
+  it("builds SDK-valid output-message history preserving refusal, citations and duplicate text identity", async () => {
+    const citation = {
+      type: "url_citation",
+      start_index: 0,
+      end_index: 6,
+      title: "source",
+      url: "https://example.com",
+    };
+    const prior = {
+      type: "message",
+      id: "upstream_message",
+      status: "completed",
+      role: "assistant",
+      phase: "final_answer",
+      content: [
+        { type: "output_text", text: "answer", annotations: [citation] },
+        { type: "refusal", refusal: "cannot" },
+      ],
+    };
+    const chat = await collectResponse(
+      events(completed([prior])),
+      "chat",
+      "test",
+    );
+    const messages = [
+      { role: "user", content: "first" },
+      chat.choices[0].message,
+      chat.choices[0].message,
+      { role: "user", content: "continue" },
+    ];
+    const normalized = normalizeRequest({ model: "test", messages }, "chat")
+      .body.input;
+    expect(normalized[1]).toMatchObject({
+      type: "message",
+      id: expect.any(String),
+      status: "completed",
+      role: "assistant",
+      content: prior.content,
+    });
+    expect(normalized[1].id).not.toBe(normalized[2].id);
+    expect(
+      normalizeRequest({ model: "test", messages }, "chat").body.input[1].id,
+    ).toBe(normalized[1].id);
+    expect(
+      normalizeRequest(
+        { model: "test", input: [...normalized, prior] },
+        "responses",
+      ).body.input,
+    ).toEqual([...normalized, prior]);
+  });
   it("maps the SDK Chat nested custom grammar and accepts documented max reasoning effort", () => {
     const r = normalizeRequest(
       {
@@ -673,6 +821,86 @@ describe("request normalization", () => {
 });
 
 describe("response adapters", () => {
+  it.each([undefined, { includeUsage: false }, { includeUsage: true }])(
+    "honors usage opt-in %j while retaining nonstream usage",
+    async (options) => {
+      const emitted = chunks(
+        await frames(
+          renderStream(
+            events(
+              { type: "response.created", response: finalResponse() },
+              completed([
+                {
+                  type: "message",
+                  id: "m",
+                  role: "assistant",
+                  content: [
+                    { type: "output_text", text: "answer", annotations: [] },
+                  ],
+                },
+              ]),
+            ),
+            "chat",
+            "test",
+            options,
+          ),
+        ),
+      );
+      const usageChunks = emitted.filter((chunk) => chunk.choices.length === 0);
+      if (options?.includeUsage) {
+        expect(usageChunks).toHaveLength(1);
+        expect(usageChunks[0].usage).toMatchObject({
+          prompt_tokens: 11,
+          completion_tokens: 5,
+          total_tokens: 16,
+        });
+        for (const chunk of emitted.filter((c) => c.choices.length))
+          expect(chunk.usage).toBeNull();
+      } else {
+        expect(usageChunks).toHaveLength(0);
+        for (const chunk of emitted) expect(chunk).not.toHaveProperty("usage");
+      }
+      expect(
+        (await collectResponse(events(completed()), "chat", "test")).usage,
+      ).toMatchObject({
+        prompt_tokens: 11,
+        completion_tokens: 5,
+        total_tokens: 16,
+      });
+    },
+  );
+  it("usage opt-in cannot add a successful usage chunk or terminator after failure", async () => {
+    const emitted: string[] = [];
+    try {
+      for await (const frame of renderStream(
+        events(
+          { type: "response.created", response: finalResponse() },
+          {
+            type: "response.output_text.delta",
+            item_id: "m",
+            content_index: 0,
+            delta: "partial",
+          },
+          {
+            type: "response.failed",
+            response: { ...finalResponse(), status: "failed" },
+          },
+        ),
+        "chat",
+        "test",
+        { includeUsage: true },
+      ))
+        emitted.push(frame);
+      expect.fail("must fail");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "response_failed" });
+    }
+    const values = chunks(emitted);
+    expect(values.every((v) => v.usage === null && v.choices.length > 0)).toBe(
+      true,
+    );
+    expect(emitted.join("")).not.toContain("[DONE]");
+  });
   it("does not duplicate .done snapshots or final output text, arguments and citations", async () => {
     const f = {
       type: "function_call",
@@ -896,6 +1124,7 @@ describe("response adapters", () => {
         ),
         "chat",
         "test",
+        { includeUsage: true },
       ),
     );
     const values = chunks(result);
