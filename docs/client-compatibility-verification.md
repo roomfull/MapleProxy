@@ -32,11 +32,11 @@ PFM SDK sources jar SHA-256：`9312B13C0A7ABE4A1A7840D646C9136ADAEC7647D73B49BD6
 
 ## 实际应用验收矩阵
 
-以下是主代理移交的当前前置状态，不是本子任务重新执行的实际应用结果。短对话、只读工具 invocation、工具结果后的模型回复均须有真实客户端证据和 MapleProxy requestId，才能登记 PASS。仅有工具声明或 gateway curl 不计应用工具往返成功。
+以下状态由主代理在生产重启后更新。真实客户端界面观察与日志关联分别记录；短对话、只读工具 invocation、工具结果后的模型回复和 MapleProxy requestId 均齐备后，才登记完整 PASS。仅有工具声明或 gateway curl 不计应用工具往返成功。
 
 | 应用 / 模式                   | 当前状态         | 已知前置条件 / 待补证据                                                                                                                                                                  |
 | ----------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| WorkBuddy 5.7.6.0             | **尚未实际验收** | 已配置 gpt-6-luna；原始 startsNewUserRequest 失败仍可见。需重启后的真实短对话与只读工具往返，记录协议、模型、requestId 和结果。                                                          |
+| WorkBuddy 5.7.6.0             | **真实界面验证通过；日志关联待补** | 重启后 gpt-6-luna 短对话正常完成（30 秒）；直接文件读取工具完成后继续回复（8 秒）；流式输出可停止且输入框恢复。既有接入为 Chat，待新请求记录核对协议和本地/上游 ID。管理会话因重启失效，等待用户重新登录。 |
 | PFM / openJiuwen 0.1.13.post1 | **尚未实际验收** | 前端 `http://127.0.0.1:3000/login` 等待用户登录；后端 8081 应用接口需认证。不得把直接请求 MapleProxy 作为 PFM 应用成功。需确认已配置 provider、Chat 模式与只读工具并记录两轮 requestId。 |
 | Agent2API 3.0.3 Chat          | **尚未实际验收** | 实际 UI 没有自定义 provider，用户私下填写已有 Maple Key 待完成；需确认模式、模型及真正连接的下游客户端，再记录短对话与工具结果第二轮。                                                   |
 | Agent2API 3.0.3 Responses     | **尚未实际验收** | 同上；固定源代码 commit 不证明安装程序版本对应，需独立记录实际协议。工具/加密 continuity 如被使用，应只保存安全结果元数据。                                                              |
@@ -47,4 +47,15 @@ PFM SDK sources jar SHA-256：`9312B13C0A7ABE4A1A7840D646C9136ADAEC7647D73B49BD6
 
 主代理在本轮构建后通过真实浏览器访问隔离 smoke fixture `http://localhost:52721` 完成 Activity 页面 QA：DOM 与截图确认 4 行（validation400 / incomplete200 / upstream429 / success）；展开详情可读，验证失败行展示 `messages[0].startsNewUserRequest` 完整路径及未进入运行时，incomplete 行展示 max_output_tokens、temperature 过滤、本地与上游 ID；“未完整完成”筛选只保留 1 行。全页截图保存在本地忽略目录 `.tmp/client-compatibility-diagnostics.jpg`，由主代理查看确认。该浏览器验收使用固定合成密码、临时数据与合成上游，不使用生产数据，不代表上述真实应用通过。
 
-生产重启、独立复核与实际应用证据仍待主代理补记；当前实际应用矩阵未登记 PASS。
+隔离服务随后经 `stop` 正常退出（exit 0），端口 52721 无剩余监听。整分支独立审查没有 Critical/Important 问题；两项 Minor（测试上游异常诊断和 README 截断说明）在 `0920704` 修正，独立复审确认全部解决。修正仅涉及测试及 README；新增测试先 RED 后 GREEN，定向 13/13 和类型检查通过。全量 269 项、vendor 56 项及构建结果属于修正之前的执行记录，没有将定向回归宣称为重新运行全量测试。
+
+2026-10-14 01:22:40（UTC+8）主代理完成一次已授权生产重启：旧进程 44620 → 新进程 9424，仍监听 `127.0.0.1:8317`。页面 HTTP 200，管理密码配置仍存在；账户和凭据没有迁移或重置。运行构建来自 `1db0679`，之后 `0920704` 未改变生产源码。上一版 server/web/vendor 构建保留在 `.tmp/rollback-client-compatibility-20261014/`，不含账户数据；发布元数据见本机忽略文件 `.tmp/client-compatibility-deployment.json`。
+
+重启后的真实 WorkBuddy 5.7.6（文件版本 5.7.6.0），继续使用既有 `gpt-6-luna` 配置：
+
+- 新建“MapleProxy 兼容性验收”对话，模型正确返回固定测试标记，界面显示完成 30 秒，没有原先 `startsNewUserRequest` 拒绝。
+- 后续请求只允许直接读取本项目 `package.json`。展开执行详情后可见“已读取”及正确文件路径；随后返回 `name: mapleproxy`、`version: 0.1.0`，界面显示完成 8 秒。没有执行 shell、脚本或写文件操作。
+- 单独启动纯文本流式输出并在进行中点击停止，输出停止、界面显示“用户已取消”，输入框恢复可用。此项证明客户端可观察的取消；服务端取消记录仍待登录后关联。
+- 本机截图分别保留于 `.tmp/workbuddy-text-acceptance.jpg`、`.tmp/workbuddy-tool-acceptance.jpg`、`.tmp/workbuddy-cancel-acceptance.jpg`，未纳入 Git。没有捕获或保存完整原始 API 请求。
+
+剩余验收前置条件：MapleProxy 管理台重新登录以核对本地/上游 requestId；PFM 前端登录及提供商选择；Agent2API 自定义提供商的私密凭据配置。已向用户发出接管请求，尚未收到完成回复。没有绕过认证、读取客户端凭据或改动 PFM/Agent2API 源码。当前不能宣称三个应用全部完成验收。
