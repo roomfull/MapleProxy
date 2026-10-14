@@ -308,6 +308,7 @@ export function Keys({
   onCreate,
   onRevoke,
   onCopy,
+  onCopyKey,
   onDismiss,
 }: {
   resource: Resource<Key>;
@@ -317,6 +318,7 @@ export function Keys({
   onCreate: (name: string) => void;
   onRevoke: (key: Key) => void;
   onCopy: (value: string) => void;
+  onCopyKey: (key: Key) => void;
   onDismiss: () => void;
 }) {
   const [name, setName] = useState("");
@@ -368,10 +370,10 @@ export function Keys({
         {created && (
           <div className="secret-card" role="status">
             <div className="row-title">
-              <strong>密钥已创建 · 仅显示这一次</strong>
+              <strong>密钥已创建，可随时从列表复制</strong>
               <span className="badge accent">{created.key.name}</span>
             </div>
-            <p>现在复制并安全保存。关闭此提示后无法再次查看完整密钥。</p>
+            <p>现在可复制并安全保存；关闭提示后仍可从下方列表复制。</p>
             <div className="secret-value">
               <code>{created.secret}</code>
               <button onClick={() => onCopy(created.secret)} disabled={!!busy}>
@@ -379,7 +381,7 @@ export function Keys({
               </button>
             </div>
             <button className="quiet" onClick={onDismiss}>
-              我已保存，隐藏密钥
+              隐藏密钥
             </button>
           </div>
         )}
@@ -400,13 +402,24 @@ export function Keys({
                   {date(key.createdAt)}
                 </p>
               </div>
-              <button
-                className="danger quiet"
-                disabled={!!busy}
-                onClick={() => onRevoke(key)}
-              >
-                撤销
-              </button>
+              <div className="key-actions">
+                <div className="key-copy">
+                  <button
+                    disabled={!!busy || !key.canCopy}
+                    onClick={() => onCopyKey(key)}
+                  >
+                    {busy === `copy-key-${key.id}` ? "复制中…" : "复制密钥"}
+                  </button>
+                  {!key.canCopy && <small>旧密钥未保存完整值，请新建密钥后复制。</small>}
+                </div>
+                <button
+                  className="danger quiet"
+                  disabled={!!busy}
+                  onClick={() => onRevoke(key)}
+                >
+                  撤销
+                </button>
+              </div>
             </div>
           ))}
       </section>

@@ -1,4 +1,18 @@
-# 验证记录（2026-10-13）
+# 验证记录（2026-10-14）
+
+## 2026-10-14 持久化密钥复制（Task 2 前端与文档）
+
+本轮在隔离 worktree 使用合成密钥，前端通过 `canCopy` 区分可复制与旧密钥。列表仅在点击后向受保护的 `POST /api/admin/keys/:id/secret` 取回原值并直接交给剪贴板；复制成功提示等待 `writeText` 完成，失败提示可重试。新建卡片与列表均不把原值拼入请求示例。浏览器桌面、窄屏及剪贴板拒绝验收由控制器继续执行，此处尚无浏览器通过结论。
+
+| Task 2 检查 | 结果 |
+| --- | --- |
+| RED：`npm run test:unit -- tests/web-view.test.ts` | 新用例 2 failed / 原有 3 passed；缺少列表复制、旧密钥提示与创建说明。 |
+| RED：`npm run test:unit -- tests/web-api.test.ts` | 新用例 2 failed / 原有 4 passed；缺少复制请求与剪贴板操作。 |
+| GREEN：`npm run test:unit -- tests/web-view.test.ts tests/web-api.test.ts` | 11/11 通过；之后补充后端拒绝时不写剪贴板的断言。 |
+| `npm test` | 21 files、300/300 Vitest 通过；vendor 56 通过、1 项 Windows 平台跳过。 |
+| `npm run typecheck` / `npm run build` / `git diff --check` | 均 exit 0；构建包含 web 产物。 |
+
+服务端 Task 1 由控制器验证：默认 DPAPI 存储的真实往返通过；使用合成会话 cookie 与 CSRF、伪造外部 Origin 的原值 POST 返回 403、`Cache-Control: no-store`，未泄露原值。旧密钥没有保存完整值，不可恢复；新密钥跨重启复制依赖原 Windows 用户及其 DPAPI 环境。
 
 此记录保留 Task 4 实现者与控制器在 Codex 重启前的验证，另记录最终修复者在 2026-10-13 新执行的回归与全套验证。Task 4 的恢复收尾依据移交记录及浏览器报告，没有重跑当时整套测试或浏览器；最终修复全套执行如下单独归属。所有账户、密钥、上游事件均为合成 fixture，生产数据目录未初始化，未使用真实 OpenAI 账户完成 OAuth 或推理。
 
