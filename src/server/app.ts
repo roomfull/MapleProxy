@@ -88,9 +88,7 @@ export async function createApp({
       .header("x-mapleproxy-local-request-id", request.id)
       .header("x-content-type-options", "nosniff")
       .header("referrer-policy", "no-referrer");
-    if (request.url.startsWith("/api/") || request.url.startsWith("/v1/"))
-      reply.header("cache-control", "no-store");
-    else
+    if (!request.url.startsWith("/api/") && !request.url.startsWith("/v1/"))
       reply.header(
         "content-security-policy",
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",

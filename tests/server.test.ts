@@ -160,6 +160,14 @@ describe("protected key recovery", () => {
       expect(response.headers["cache-control"]).toBe("no-store");
       expect(response.body).not.toContain(secret);
     }
+    const foreignOrigin = await app.inject({
+      method: "POST",
+      url: `/api/admin/keys/${id}/secret`,
+      headers: { ...admin(), origin: "https://example.org" },
+    });
+    expect(foreignOrigin.statusCode).toBe(403);
+    expect(foreignOrigin.headers["cache-control"]).toBe("no-store");
+    expect(foreignOrigin.body).not.toContain(secret);
     const get = await app.inject({
       url: `/api/admin/keys/${id}/secret`,
       headers: admin(),

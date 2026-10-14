@@ -25,12 +25,12 @@
 ### Task 1: Storage and protected retrieval
 **Files:** src/server/security.ts, src/server/app.ts, src/server/routes.ts, tests/security.test.ts, tests/server.test.ts, tests/dpapi.test.ts, tests/helpers.ts, other existing key-creation test fixtures.
 **Interfaces:** SecurityStore(dataDir: string, encryption?: CredentialEncryption); getKeySecret(id: string): Promise<string>; AppOptions.encryption?: CredentialEncryption; KeyView.canCopy: boolean.
-- [ ] Write failing storage tests: restore another store then getKeySecret equals created value; disk excludes literal and Base64 plaintext; whitelist keys exactly; legacy 409 but authenticates; revoke 404 and fails auth; encryption unavailable/throws leaves no record; malformed ciphertext, wrong encryptionId and wrong decrypted hash return 503 while good keys work.
-- [ ] Write failing HTTP tests for create/list/relogin/restart retrieval and inference auth. Test unauthenticated, expired (fake Date.now), inference-only bearer, bad/missing Origin, bad/missing CSRF, GET not supported. Check no-store on success/errors and no leaked sensitive data.
-- [ ] Run focused tests before implementation and record expected failure evidence.
-- [ ] Implement existing-provider injection, atomic encrypted creation, explicit views, hash-verified decryption and protected route. Map encryption errors to safe AppError 503 without provider exception contents.
-- [ ] Inject a real reversible test cipher into every routine key-creation fixture so tests do not call DPAPI. Add actual Windows store integration with default provider and disk checks.
-- [ ] Run focused tests and typecheck. Self-review, commit task files; report red/green evidence and residuals.
+- [x] Write failing storage tests: restore another store then getKeySecret equals created value; disk excludes literal and Base64 plaintext; whitelist keys exactly; legacy 409 but authenticates; revoke 404 and fails auth; encryption unavailable/throws leaves no record; malformed ciphertext, wrong encryptionId and wrong decrypted hash return 503 while good keys work.
+- [x] Write failing HTTP tests for create/list/relogin/restart retrieval and inference auth. Test unauthenticated, expired (fake Date.now), inference-only bearer, bad/missing Origin, bad/missing CSRF, GET not supported. Check no-store on success/errors and no leaked sensitive data.
+- [x] Run focused tests before implementation and record expected failure evidence.
+- [x] Implement existing-provider injection, atomic encrypted creation, explicit views, hash-verified decryption and protected route. Map encryption errors to safe AppError 503 without provider exception contents.
+- [x] Inject a real reversible test cipher into every routine key-creation fixture so tests do not call DPAPI. Add actual Windows store integration with default provider and disk checks.
+- [x] Run focused tests and typecheck. Self-review, commit task files; report red/green evidence and residuals.
 
 Example acceptance:
 ```ts
@@ -42,13 +42,13 @@ expect(Object.keys((await store.listKeys())[0]!).sort()).toEqual(["canCopy", "cr
 ### Task 2: Copy interaction and documentation
 **Files:** web/src/types.ts, web/src/panels.tsx, web/src/App.tsx, web/src/style.css as needed, tests/web-view.test.ts, tests/web-api.test.ts (and focused interaction tests if needed), README.md, docs/verification.md.
 **Interfaces:** consume Key.canCopy and protected retrieval; Keys.onCopyKey: (key: Key) => void; use existing ApiClient and notices.
-- [ ] Write failing render/client/interaction tests for copyable and legacy rows, pending disabled button, card wording and clipboard rejection without success. Protect request examples from fetched originals.
-- [ ] Run focused tests, record RED.
-- [ ] Implement callback passing row ID to protected POST and awaiting clipboard. Use synchronous guard if necessary to block duplicate clicks before React rerender; keep result ephemeral.
-- [ ] Implement visible legacy explanation, copy-before-revoke actions and responsive wrapping.
-- [ ] Update README and verification evidence with actual tested facts and DPAPI user/environment dependency.
-- [ ] Run focused tests and final npm test/typecheck/build. Check desktop and narrow layouts using built output and synthetic data only.
-- [ ] Self-review, commit changes, report test and visual evidence.
+- [x] Write failing render/client/interaction tests for copyable and legacy rows, pending disabled button, card wording and clipboard rejection without success. Protect request examples from fetched originals.
+- [x] Run focused tests, record RED.
+- [x] Implement callback passing row ID to protected POST and awaiting clipboard. Use synchronous guard if necessary to block duplicate clicks before React rerender; keep result ephemeral.
+- [x] Implement visible legacy explanation, copy-before-revoke actions and responsive wrapping.
+- [x] Update README and verification evidence with actual tested facts and DPAPI user/environment dependency.
+- [x] Run focused tests and final npm test/typecheck/build. Check desktop and narrow layouts using built output and synthetic data only.
+- [x] Self-review, commit changes, report test and visual evidence.
 
 Example client contract:
 ```ts

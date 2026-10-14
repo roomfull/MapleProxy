@@ -132,7 +132,7 @@ it("disables the pending key-copy button and updates creation guidance", () => {
     busy: "copy-key-saved", onCreate() {}, onRevoke() {}, onCopy() {}, onCopyKey() {}, onDismiss() {},
     created: { key: { id: "new", name: "new", prefix: "mp_new", createdAt: "2026-10-14T00:00:00Z", canCopy: true }, secret: "mp_fixture_secret" },
   }));
-  expect(html).toContain("复制中…");
+  expect(html).toMatch(/<button[^>]*disabled=""[^>]*>复制中…<\/button>/);
   expect(html).toContain("密钥已创建，可随时从列表复制");
   expect(html).toContain("隐藏密钥");
   expect(html).not.toContain("仅显示这一次");

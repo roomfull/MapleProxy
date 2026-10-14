@@ -184,7 +184,7 @@ export function App() {
       );
       setNotice({ text: "已复制到剪贴板。" });
     } catch {
-      setNotice({ text: "复制失败。请检查剪贴板权限后重试。", error: true });
+      setNotice({ text: "复制失败，请稍后重试。", error: true });
     } finally {
       keyCopyPending.current = false;
       setBusy("");
