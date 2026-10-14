@@ -2,6 +2,12 @@
   "name": "mapleproxy",
   "version": "0.1.0",
   "private": true,
+  "description": "A local reverse proxy for personal, noncommercial Agent experiments using Sign in with ChatGPT.",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roomfull/MapleProxy.git"
+  },
   "type": "module",
   "workspaces": [
     "vendor/siwc"

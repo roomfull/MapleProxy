@@ -3,7 +3,19 @@ dist/
 web/dist/
 vendor/siwc/dist/
 data/
+# Also protect account files when MAPLEPROXY_DATA_DIR points elsewhere in the repo.
+chatgpt-auth.json
+chatgpt-host.json
+security.json
+security.json.lock
+security.json.*.tmp
 .env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.log
+*.tsbuildinfo
 .tmp/
 .superpowers/
 coverage/

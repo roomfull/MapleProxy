@@ -20,3 +20,8 @@ from the same timestamp/default180s or configured timeout used for its existing
 headers/body deadline. No deadline reset at headers and no timeout policy change.
 MapleProxy uses this fixed numeric metadata to bound downstream drain waits; no
 auth/account/policy behavior or SDK dependency source is changed.
+Distribution notices (2026-10-14): added per-file change notices to package.json,
+tsconfig.json and the MapleProxy-added copy-notices.mjs. These local DevKit
+modifications remain under the accompanying DevKit Noncommercial License.
+The host build now also copies DevKit license/provenance materials alongside
+the duplicate compiled DevKit tree at dist/vendor/siwc/.

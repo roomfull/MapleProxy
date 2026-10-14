@@ -1,4 +1,5 @@
 {
+  "_mapleproxyModificationNotice": "Modified by MapleProxy: local build configuration and notice copying; see PROVENANCE.md. Licensed under the accompanying DevKit Noncommercial License.",
   "name": "@siwc/local",
   "version": "0.1.0",
   "private": true,

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-ci:
+    name: Windows CI
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Check PR target
+        run: node .github/scripts/check-pr-target.mjs
+      - name: Clean install
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Verify license artifacts
+        run: node .github/scripts/verify-licenses.mjs
+      - name: Regenerate third-party notices
+        run: npm run notices:generate
+      - name: Check third-party notice drift
+        run: git diff --exit-code -- THIRD_PARTY_NOTICES.md

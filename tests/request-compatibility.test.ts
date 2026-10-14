@@ -228,7 +228,7 @@ describe("client request compatibility", () => {
       reason: "empty_optional",
     });
   });
-  it("filters WorkBuddy/PFM Chat metadata with value-free paths and preserves message text", () => {
+  it("filters synthetic Chat metadata with value-free paths and preserves message text", () => {
     const result = normalizeRequest(
       {
         model: "synthetic",

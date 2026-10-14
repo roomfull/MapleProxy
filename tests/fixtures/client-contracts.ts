@@ -3,23 +3,11 @@ import type { JsonObject } from "../../src/auth/runtime.js";
 // SOURCE-DERIVED / SYNTHETIC, never captured real client requests.
 // Text, tool names/IDs, option values, URLs, file data and encrypted carriers are synthetic.
 // WorkBuddy's original 5.7.6 failure proves only rejection of startsNewUserRequest.
-// PFM structures come from BaseModelClient.java in the pinned SDK sources jar plus
-// OpenAiRawDebugModelClient.java; Agent2API shapes model its outbound Rust code, not
-// execution of that converter. Installed Agent2API 3.0.3 is not mapped to this commit.
+// Agent2API shapes model its outbound Rust code, not execution of that converter. Installed Agent2API 3.0.3 is not mapped to this commit.
 export const contractSources = {
   workBuddy: {
     version: "WorkBuddy 5.7.6 (observed field only)",
     evidence: "original unsupported_parameter report: startsNewUserRequest",
-  },
-  pfm: {
-    version:
-      "PFM 564459636efac48df417191f7144413110afb90c / openJiuwen 0.1.13.post1",
-    sdkJarSha256:
-      "9312B13C0A7ABE4A1A7840D646C9136ADAEC7647D73B49BD6878A0C484322F7A",
-    rawClientSha256:
-      "C61A61949795A229288A052D6DEE618490DB3E031A4736FFE185516BC1E56FCA",
-    evidence:
-      "BaseModelClient.java:189-218,296-345; OpenAiRawDebugModelClient.java:350,681-692,1211-1260",
   },
   agent2api: {
     version: "Agent2API source e8a9d577983b3e9dcc5290b89cae20b204fcf222",
@@ -65,24 +53,6 @@ export function workBuddyRequest(): JsonObject {
         startsNewUserRequest: true,
       },
     ],
-  };
-}
-
-export function pfmRequest(history: JsonObject[] = []): JsonObject {
-  return {
-    model: "test-model",
-    messages: [{ role: "user", content: "读取 alpha 和 beta" }, ...history],
-    tools: structuredClone(tools),
-    tool_choice: "auto",
-    stream: true,
-    stream_options: { include_usage: true },
-    // Values are synthetic configured values, not claims about PFM defaults.
-    temperature: 0.5,
-    top_p: 0.9,
-    max_tokens: 512,
-    user: "synthetic-user",
-    seed: 7,
-    stop: ["synthetic-stop"],
   };
 }
 

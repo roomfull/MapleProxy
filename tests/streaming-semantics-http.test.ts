@@ -5,15 +5,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
+import { performance } from "node:perf_hooks";
 import { SecurityStore } from "../src/server/security.js";
 import { createApp } from "../src/server/app.js";
 import { AppError } from "../src/shared/errors.js";
 import type { AccountRuntime, JsonObject } from "../src/auth/runtime.js";
 
 async function eventually(check: () => boolean) {
-  const deadline = Date.now() + 2000;
+  const deadline = performance.now() + 2000;
   while (!check()) {
-    if (Date.now() > deadline) throw new Error("HTTP event timeout");
+    if (performance.now() > deadline) throw new Error("HTTP event timeout");
     await tick();
   }
 }
@@ -552,7 +553,8 @@ it.each(["responses", "chat"] as const)(
         }
       })(),
     );
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // Idle deadlines and timers must use the same clock; HTTP polling stays real.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     let connection: Awaited<ReturnType<typeof f.open>> | undefined;
     try {
       let headers = false;

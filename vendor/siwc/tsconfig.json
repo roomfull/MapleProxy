@@ -1,4 +1,5 @@
 {
+  // Modified by MapleProxy: use the host project's TypeScript config; see PROVENANCE.md.
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "types": ["node"],
