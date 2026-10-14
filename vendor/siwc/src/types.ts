@@ -85,14 +85,28 @@ export interface StreamResponseOptions {
   onDelta?: (delta: string) => void;
 }
 
-export interface SignInOptions {
-  signal?: AbortSignal;
+export type SignInMode = "browser" | "manual";
+export interface SignInRequest {
   /** Register another account instead of reauthorizing the selected profile. */
   newProfile?: boolean;
   profileId?: string;
   label?: string;
   /** Only set after an explicit user choice to enable or reconnect token sharing. */
   reconsent?: boolean;
+  mode?: SignInMode;
+}
+
+export type SignInProgress =
+  | {
+      phase: "awaiting_callback";
+      authorizationUrl: string;
+      submitCallback: (callbackUrl: string) => void;
+    }
+  | { phase: "exchanging" };
+
+export interface SignInOptions extends SignInRequest {
+  signal?: AbortSignal;
+  onProgress?: (progress: SignInProgress) => void;
 }
 
 export interface ChatGPTClient {

@@ -25,3 +25,16 @@ tsconfig.json and the MapleProxy-added copy-notices.mjs. These local DevKit
 modifications remain under the accompanying DevKit Noncommercial License.
 The host build now also copies DevKit license/provenance materials alongside
 the duplicate compiled DevKit tree at dist/vendor/siwc/.
+Cross-device authorization (2026-10-14): types/index/oauth add browser/manual
+sign-in requests and transient progress callbacks. Manual mode suppresses both
+browser openers while retaining the IPv4 loopback listener. HTTP and pasted URL
+callbacks share strict origin/path/parameter/state validation and one synchronous
+consumption gate; malformed input remains correctable and stale handles reject.
+PKCE, nonce and verified identity binding remain unchanged. Each invalid_grant
+retry emits a fresh URL/handle while preserving the issued client registration;
+one browser 5-minute/manual 10-minute SDK deadline covers the whole operation.
+The host management API projects safe job metadata, bounds callback text at
+16 KiB UTF-8 after trim, never fetches submitted URLs, and retains cancellation
+reservations until the underlying promise settles. Related reference sources
+inspected during planning: upstream packages/local/src/oauth.ts and
+https://github.com/router-for-me/CLIProxyAPI/blob/main/internal/api/handlers/management/oauth_callback.go.

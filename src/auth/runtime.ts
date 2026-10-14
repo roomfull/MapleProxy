@@ -1,9 +1,18 @@
 import { createChatGPT, ChatGPTError } from "../../vendor/siwc/src/index.js";
-import type { CredentialEncryption } from "../../vendor/siwc/src/types.js";
+import type {
+  CredentialEncryption,
+  SignInOptions,
+} from "../../vendor/siwc/src/types.js";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses";
 import { createDpapiEncryption } from "./dpapi.js";
 import { AppError } from "../shared/errors.js";
 export type { CredentialEncryption } from "../../vendor/siwc/src/types.js";
+export type {
+  SignInMode,
+  SignInRequest,
+  SignInProgress,
+  SignInOptions,
+} from "../../vendor/siwc/src/types.js";
 export type JsonObject = Record<string, any>;
 export interface AccountView {
   id: string;
@@ -29,12 +38,7 @@ export interface UpstreamResponse {
 }
 export interface AccountRuntime {
   listAccounts(): Promise<AccountView[]>;
-  signIn(options?: {
-    profileId?: string;
-    newProfile?: boolean;
-    label?: string;
-    reconsent?: boolean;
-  }): Promise<unknown>;
+  signIn(options?: SignInOptions): Promise<unknown>;
   cancelSignIn(): void;
   selectAccount(id: string): Promise<void>;
   setEnabled(id: string, enabled: boolean): Promise<void>;

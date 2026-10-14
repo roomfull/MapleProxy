@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { AccountRuntime } from "../auth/runtime.js";
+import type {
+  AccountRuntime,
+  SignInMode,
+  SignInRequest,
+  SignInProgress,
+} from "../auth/runtime.js";
 import { AppError } from "../shared/errors.js";
 import { LoginLimiter, SecurityStore } from "./security.js";
 import type { ActivityLog } from "./activity.js";
@@ -49,6 +54,46 @@ interface Job {
   status: "pending" | "completed" | "failed" | "cancelled";
   createdAt: string;
   code?: string;
+  mode: SignInMode;
+  expiresAt: string;
+  phase: "preparing" | "awaiting_callback" | "exchanging";
+  options: SignInRequest & { mode: SignInMode };
+  authorizationUrl?: string;
+}
+interface InternalJob extends Job {
+  submitCallback?: (callbackUrl: string) => void;
+}
+function publicJob(job: InternalJob): Job {
+  const options: Job["options"] = { mode: job.mode };
+  for (const key of [
+    "profileId",
+    "newProfile",
+    "label",
+    "reconsent",
+  ] as const) {
+    if (job.options[key] !== undefined)
+      Object.assign(options, { [key]: job.options[key] });
+  }
+  return {
+    id: job.id,
+    status: job.status,
+    createdAt: job.createdAt,
+    ...(job.code ? { code: job.code } : {}),
+    mode: job.mode,
+    expiresAt: job.expiresAt,
+    phase: job.phase,
+    options,
+    ...(job.mode === "manual" &&
+    job.status === "pending" &&
+    job.phase === "awaiting_callback" &&
+    job.authorizationUrl
+      ? { authorizationUrl: job.authorizationUrl }
+      : {}),
+  };
+}
+function clearCallback(job: InternalJob): void {
+  delete job.authorizationUrl;
+  delete job.submitCallback;
 }
 export function registerAdmin(
   app: FastifyInstance,
@@ -57,12 +102,28 @@ export function registerAdmin(
   activity: ActivityLog,
 ): void {
   const limiter = new LoginLimiter(),
-    jobs = new Map<string, Job>();
+    jobs = new Map<string, InternalJob>();
   let active: string | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
+  const expire = (job: InternalJob, timerElapsed = false): boolean => {
+    if (job.status !== "pending") return false;
+    if (!timerElapsed && Date.now() < Date.parse(job.expiresAt)) return false;
+    job.status = "failed";
+    job.code = "sign_in_timeout";
+    clearCallback(job);
+    if (active === job.id) runtime.cancelSignIn();
+    return true;
+  };
   app.addHook("onClose", async () => {
     if (deadline) clearTimeout(deadline);
-    if (active) runtime.cancelSignIn();
+    if (active) {
+      const job = jobs.get(active);
+      if (job) {
+        clearCallback(job);
+        if (job.status === "pending") job.status = "cancelled";
+      }
+      runtime.cancelSignIn();
+    }
   });
   const auth = async (request: FastifyRequest) => {
     const session = await security.session(sessionToken(request));
@@ -189,19 +250,34 @@ export function registerAdmin(
         "newProfile",
         "label",
         "reconsent",
+        "mode",
       ]);
+      if (
+        body.mode !== undefined &&
+        body.mode !== "browser" &&
+        body.mode !== "manual"
+      )
+        throw new AppError(400, "invalid_request", "登录模式无效。", "mode");
+      const mode: SignInMode = body.mode === "manual" ? "manual" : "browser";
       const options = {
         profileId: text(body.profileId, "profileId", true),
         newProfile: boolean(body.newProfile, "newProfile", true),
         label: text(body.label, "label", true),
         reconsent: boolean(body.reconsent, "reconsent", true),
+        mode,
       };
       if (active) throw new AppError(409, "sign_in_busy", "已有登录正在进行。");
       while (jobs.size >= 32) jobs.delete(jobs.keys().next().value!);
-      const job: Job = {
+      const createdAt = Date.now();
+      const duration = (mode === "manual" ? 10 : 5) * 60_000;
+      const job: InternalJob = {
         id: randomUUID(),
         status: "pending",
-        createdAt: new Date().toISOString(),
+        createdAt: new Date(createdAt).toISOString(),
+        mode,
+        expiresAt: new Date(createdAt + duration).toISOString(),
+        phase: "preparing",
+        options,
       };
       jobs.set(job.id, job);
       active = job.id;
@@ -212,40 +288,107 @@ export function registerAdmin(
           deadline = undefined;
         }
       };
-      deadline = setTimeout(() => {
-        if (job.status === "pending") {
-          job.status = "failed";
-          job.code = "sign_in_timeout";
-          runtime.cancelSignIn();
-          // Retain the reservation until the sign-in promise actually settles.
+      const onProgress = (progress: SignInProgress) => {
+        if (active !== job.id || job.status !== "pending" || expire(job))
+          return;
+        clearCallback(job);
+        job.phase = progress.phase;
+        if (progress.phase === "awaiting_callback" && mode === "manual") {
+          job.authorizationUrl = progress.authorizationUrl;
+          job.submitCallback = progress.submitCallback;
         }
-      }, 5 * 60_000);
+      };
+      deadline = setTimeout(() => expire(job, true), duration);
       deadline.unref();
       Promise.resolve()
-        .then(() => runtime.signIn(options))
+        .then(() =>
+          job.status === "pending" && !expire(job)
+            ? runtime.signIn({ ...options, onProgress })
+            : undefined,
+        )
         .then(
           () => {
-            if (job.status === "pending") job.status = "completed";
+            if (job.status === "pending" && !expire(job))
+              job.status = "completed";
+            clearCallback(job);
           },
           (error) => {
-            if (job.status === "pending") {
+            if (job.status === "pending" && !expire(job)) {
               job.status = "failed";
               job.code =
                 error instanceof AppError
                   ? safeField(error.code)
                   : "sign_in_failed";
             }
+            clearCallback(job);
           },
         )
         .finally(finish);
-      return reply.code(202).send({ ...job });
+      return reply.code(202).send(publicJob(job));
     },
   );
   app.get("/api/admin/sign-in/:id", { preHandler: auth }, async (request) => {
     const job = jobs.get((request.params as { id: string }).id);
     if (!job) throw new AppError(404, "not_found", "登录任务不存在。");
-    return { ...job };
+    expire(job);
+    return publicJob(job);
   });
+  app.get("/api/admin/sign-in/active", { preHandler: auth }, async () => {
+    const job = active ? jobs.get(active) : undefined;
+    if (job) expire(job);
+    return { job: job ? publicJob(job) : null };
+  });
+  app.post(
+    "/api/admin/sign-in/:id/callback",
+    { preHandler: auth },
+    async (request, reply) => {
+      const job = jobs.get((request.params as { id: string }).id);
+      if (!job) throw new AppError(404, "not_found", "登录任务不存在。");
+      expire(job);
+      if (
+        active !== job.id ||
+        job.mode !== "manual" ||
+        job.status !== "pending" ||
+        job.phase !== "awaiting_callback" ||
+        !job.submitCallback
+      )
+        throw new AppError(
+          409,
+          "callback_unavailable",
+          "当前登录任务无法接收回调。",
+        );
+      const body = bodyObject(request.body, ["callbackUrl"]);
+      if (
+        typeof body.callbackUrl !== "string" ||
+        !body.callbackUrl.trim() ||
+        Buffer.byteLength(body.callbackUrl.trim(), "utf8") > 16 * 1024
+      )
+        throw new AppError(
+          400,
+          "callback_invalid",
+          "回调地址格式无效，请复制完整地址后重试。",
+          "callbackUrl",
+        );
+      try {
+        job.submitCallback(body.callbackUrl.trim());
+      } catch (error) {
+        const unavailable =
+          error !== null &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "callback_unavailable";
+        throw new AppError(
+          unavailable ? 409 : 400,
+          unavailable ? "callback_unavailable" : "callback_invalid",
+          "回调地址无效或已失效，请检查登录任务后重试。",
+          "callbackUrl",
+        );
+      }
+      clearCallback(job);
+      job.phase = "exchanging";
+      return reply.code(202).send(publicJob(job));
+    },
+  );
   app.delete(
     "/api/admin/sign-in/:id",
     { preHandler: auth },
@@ -254,9 +397,10 @@ export function registerAdmin(
       if (!job) throw new AppError(404, "not_found", "登录任务不存在。");
       if (job.status === "pending") {
         job.status = "cancelled";
+        clearCallback(job);
         runtime.cancelSignIn(); /* Keep active until cancellation settles. */
       }
-      return { ...job };
+      return publicJob(job);
     },
   );
 }
