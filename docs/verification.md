@@ -28,6 +28,7 @@
 | 操作 | 已观察结果 |
 | --- | --- |
 | 复制授权链接 | 浏览器剪贴板内容与页面当前完整授权 URL 一致。 |
+| 剪贴板拒绝后的手动复制 | 隔离构建副本注入 `NotAllowedError` 后，实际点击复制按钮只显示失败回退提示；只读授权文本框获得焦点并全选，Ctrl+C 后浏览器剪贴板与完整链接一致。 |
 | 无效回调纠错 | 错误提示可见，原输入保留，可以修改后再次提交。 |
 | 刷新 / 退出后重新登录 | 恢复同一任务、同一链接及原截止时间，倒计时继续依据原期限。 |
 | 合成 retry 回调 | 生成新链接，输入清空，显示“授权链接已更新，请重新复制”，期限未重置。 |
@@ -36,7 +37,9 @@
 | 原浏览器模式 | Continue with ChatGPT 入口可用，显示原 5 分钟期限。 |
 | 桌面 / 窄屏布局及控制台 | 1365×900 与 390×844 无水平溢出；浏览器 console warning/error 为空。 |
 
-截图保存在忽略的可视化目录 `C:/Users/98356/.codex/visualizations/2026/10/14/01a1395b-3c4a-7111-a5d1-5f88738b3921/`，文件为 `remote-login-desktop.jpg`、`remote-login-mobile.jpg`。剪贴板失败回退只通过注入拒绝 Promise 的单元测试验证，未验证浏览器原生权限拒绝或操作系统权限弹窗，也不声称已完成原生拒绝后的手动选择交互。遵从用户要求，未关闭内置浏览器或其标签页。
+截图保存在忽略的可视化目录 `C:/Users/98356/.codex/visualizations/2026/10/14/01a1395b-3c4a-7111-a5d1-5f88738b3921/`，文件为 `remote-login-desktop.jpg`、`remote-login-mobile.jpg`、`remote-login-copy-fallback.jpg`。
+
+剪贴板回退的补充浏览器验收使用忽略目录 `.superpowers/sdd/2026-10-14-remote-chatgpt-login/clipboard-fixture/web/dist` 内的构建副本，只将该副本的授权链接剪贴板调用改为以 `NotAllowedError` 类型 DOMException 拒绝的 Promise；生产源码和构建产物未修改。runner 导入原 smoke fixture 并以隔离目录作为 cwd，监听本机端口 59799。实际点击按钮后只有失败回退提示，没有成功提示；授权文本框 `readOnly=true` 且已聚焦，`selectionStart=0`、`selectionEnd=140` 与 `value.length=140` 一致。随后通过 `ControlOrMeta+c` 手动复制，浏览器剪贴板与完整授权 URL 精确相等。这验证注入拒绝后的真实界面回退和手动复制，未验证原生权限拒绝或操作系统权限弹窗。控制器已恢复端口 50873 的正常隔离 fixture。应用恢复后遵从用户要求，未再关闭内置浏览器或其标签页。
 
 stdin 的 callback/retry/fail 打印当前合成回调，rotate 更新链接，complete 完成浏览器模式，stop 正常关闭隔离服务；具体格式见 [README](../README.md)。
 
