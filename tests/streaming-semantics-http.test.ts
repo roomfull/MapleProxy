@@ -10,6 +10,7 @@ import { SecurityStore } from "../src/server/security.js";
 import { createApp } from "../src/server/app.js";
 import { AppError } from "../src/shared/errors.js";
 import type { AccountRuntime, JsonObject } from "../src/auth/runtime.js";
+import { encryption } from "./helpers.js";
 
 async function eventually(check: () => boolean) {
   const deadline = performance.now() + 2000;
@@ -25,7 +26,8 @@ async function fixture(
   deadlineMs?: number,
 ) {
   const dir = await mkdtemp(join(tmpdir(), "maple-sse-contract-"));
-  const secret = (await new SecurityStore(dir).createKey("test")).secret;
+  const secret = (await new SecurityStore(dir, encryption).createKey("test"))
+    .secret;
   let signal!: AbortSignal;
   const runtime = {
     requestResponses: async (request: { signal: AbortSignal }) => {
@@ -41,7 +43,7 @@ async function fixture(
       };
     },
   } as unknown as AccountRuntime;
-  const app = await createApp({ runtime, dataDir: dir, port: 0 });
+  const app = await createApp({ runtime, dataDir: dir, port: 0, encryption });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const port = (app.server.address() as { port: number }).port;
   return {

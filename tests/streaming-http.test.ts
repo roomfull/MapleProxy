@@ -6,10 +6,12 @@ import { request as httpRequest } from "node:http";
 import { SecurityStore } from "../src/server/security.js";
 import { createApp } from "../src/server/app.js";
 import type { AccountRuntime } from "../src/auth/runtime.js";
+import { encryption } from "./helpers.js";
 
 it("flushes SSE incrementally and aborts upstream when a real HTTP client disconnects", async () => {
   const dir = await mkdtemp(join(tmpdir(), "maple-socket-"));
-  const secret = (await new SecurityStore(dir).createKey("socket")).secret;
+  const secret = (await new SecurityStore(dir, encryption).createKey("socket"))
+    .secret;
   let abort!: () => void;
   const aborted = new Promise<void>((resolve) => {
     abort = resolve;
@@ -33,7 +35,7 @@ it("flushes SSE incrementally and aborts upstream when a real HTTP client discon
       };
     },
   } as unknown as AccountRuntime;
-  const app = await createApp({ runtime, dataDir: dir, port: 0 });
+  const app = await createApp({ runtime, dataDir: dir, port: 0, encryption });
   try {
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address() as { port: number };

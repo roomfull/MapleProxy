@@ -6,6 +6,7 @@ import { createApp } from "../src/server/app.js";
 import { SecurityStore } from "../src/server/security.js";
 import type { AccountRuntime, AccountView } from "../src/auth/runtime.js";
 import { AppError } from "../src/shared/errors.js";
+import { encryption } from "../tests/helpers.js";
 
 export const smokePassword = "MapleProxy smoke fixture 2026";
 export async function startSmokeFixture(): Promise<{
@@ -14,7 +15,7 @@ export async function startSmokeFixture(): Promise<{
   close(): Promise<void>;
 }> {
   const dataDir = await mkdtemp(join(tmpdir(), "maple-browser-smoke-"));
-  const security = new SecurityStore(dataDir);
+  const security = new SecurityStore(dataDir, encryption);
   const accounts: AccountView[] = ["a", "b"].map((id, index) => ({
     id,
     label: index ? "测试账户 B" : "测试账户 A",
@@ -121,6 +122,7 @@ export async function startSmokeFixture(): Promise<{
       dataDir,
       webDir: resolve("web/dist"),
       port: 0,
+      encryption,
     });
     await app.listen({ host: "127.0.0.1", port: 0 });
     const url = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;

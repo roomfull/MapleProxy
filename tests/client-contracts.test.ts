@@ -108,10 +108,15 @@ beforeEach(async () => {
     runtimeEntries++;
     return original(request);
   };
-  const security = new SecurityStore(data.dataDir);
+  const security = new SecurityStore(data.dataDir, encryption);
   await security.setPassword("synthetic contract password");
   secret = (await security.createKey("synthetic-contract")).secret;
-  app = await createApp({ runtime, dataDir: data.dataDir, port: 0 });
+  app = await createApp({
+    runtime,
+    dataDir: data.dataDir,
+    port: 0,
+    encryption,
+  });
   await app.listen({ host: "127.0.0.1", port: 0 });
   url = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;
   const login = await fetch(`${url}/api/admin/login`, {
