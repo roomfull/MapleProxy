@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import staticFiles from "@fastify/static";
 import { randomUUID } from "node:crypto";
 import type { AccountRuntime } from "../auth/runtime.js";
+import type { CredentialEncryption } from "../../vendor/siwc/src/types.js";
 import { normalizeRequest } from "../protocol/normalize.js";
 import {
   collectResponse,
@@ -21,6 +22,7 @@ export interface AppOptions {
   dataDir: string;
   webDir?: string;
   port?: number;
+  encryption?: CredentialEncryption;
 }
 export function errorEnvelope(
   error: unknown,
@@ -53,6 +55,7 @@ export async function createApp({
   dataDir,
   webDir,
   port = 8317,
+  encryption,
 }: AppOptions) {
   const app = Fastify({
     logger: false,
@@ -60,9 +63,11 @@ export async function createApp({
     requestIdHeader: false,
     genReqId: () => randomUUID(),
   });
-  const security = new SecurityStore(dataDir),
+  const security = new SecurityStore(dataDir, encryption),
     activity = new ActivityLog();
   app.addHook("onRequest", async (request, reply) => {
+    if (request.url.startsWith("/api/") || request.url.startsWith("/v1/"))
+      reply.header("cache-control", "no-store");
     const host = request.headers.host;
     const address = app.server.address();
     const actualPort =
@@ -83,9 +88,7 @@ export async function createApp({
       .header("x-mapleproxy-local-request-id", request.id)
       .header("x-content-type-options", "nosniff")
       .header("referrer-policy", "no-referrer");
-    if (request.url.startsWith("/api/") || request.url.startsWith("/v1/"))
-      reply.header("cache-control", "no-store");
-    else
+    if (!request.url.startsWith("/api/") && !request.url.startsWith("/v1/"))
       reply.header(
         "content-security-policy",
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",

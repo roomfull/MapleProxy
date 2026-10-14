@@ -109,9 +109,15 @@ beforeEach(async () => {
       return fetch(`${upstreamURL}${remote.pathname}`, init);
     },
   });
-  secret = (await new SecurityStore(data.dataDir).createKey("integration"))
-    .secret;
-  app = await createApp({ runtime, dataDir: data.dataDir, port: 0 });
+  secret = (
+    await new SecurityStore(data.dataDir, encryption).createKey("integration")
+  ).secret;
+  app = await createApp({
+    runtime,
+    dataDir: data.dataDir,
+    port: 0,
+    encryption,
+  });
   await app.listen({ host: "127.0.0.1", port: 0 });
   url = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;
   client = new OpenAI({

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiClient } from "./api.js";
 import type { SessionView } from "./api.js";
 import type { Account, Activity, Job, Key, Model, Resource } from "./types.js";
@@ -49,6 +49,7 @@ export function App() {
     newProfile: true,
   });
   const [created, setCreated] = useState<{ key: Key; secret: string }>();
+  const keyCopyPending = useRef(false);
   const loadSession = async () => {
     setSessionError("");
     try {
@@ -172,6 +173,23 @@ export function App() {
       await navigator.clipboard.writeText(value);
       setNotice({ text: "已复制到剪贴板。" });
     });
+  const copyKey = async (key: Key) => {
+    if (keyCopyPending.current || busy || !key.canCopy) return;
+    keyCopyPending.current = true;
+    setBusy(`copy-key-${key.id}`);
+    setNotice(undefined);
+    try {
+      await api.copyKeyToClipboard(key.id, (secret) =>
+        navigator.clipboard.writeText(secret),
+      );
+      setNotice({ text: "已复制到剪贴板。" });
+    } catch {
+      setNotice({ text: "复制失败，请稍后重试。", error: true });
+    } finally {
+      keyCopyPending.current = false;
+      setBusy("");
+    }
+  };
   const current = tabs.find((item) => item.id === tab)!;
   if (!session?.authenticated)
     return (
@@ -373,6 +391,7 @@ export function App() {
               model={models.data[0]?.id}
               onDismiss={() => setCreated(undefined)}
               onCopy={(value) => void copy(value)}
+              onCopyKey={(key) => void copyKey(key)}
               onCreate={(name) =>
                 void action("create-key", async () => {
                   setCreated(await api.request("/keys", "POST", { name }));

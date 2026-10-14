@@ -1,4 +1,28 @@
-# 验证记录（2026-10-13）
+# 验证记录（2026-10-14）
+
+## 2026-10-14 持久化密钥复制（Task 2 前端与文档）
+
+本轮在隔离 worktree 使用合成密钥，前端通过 `canCopy` 区分可复制与旧密钥。列表仅在点击后向受保护的 `POST /api/admin/keys/:id/secret` 取回原值并直接交给剪贴板；复制成功提示等待 `writeText` 完成，失败提示可重试。新建卡片与列表均不把原值拼入请求示例。此段保留 Task 2 当时的记录；随后控制器完成的本功能浏览器验收见下文。
+
+| Task 2 检查 | 结果 |
+| --- | --- |
+| RED：`npm run test:unit -- tests/web-view.test.ts` | 新用例 2 failed / 原有 3 passed；缺少列表复制、旧密钥提示与创建说明。 |
+| RED：`npm run test:unit -- tests/web-api.test.ts` | 新用例 2 failed / 原有 4 passed；缺少复制请求与剪贴板操作。 |
+| GREEN：`npm run test:unit -- tests/web-view.test.ts tests/web-api.test.ts` | 11/11 通过；之后补充后端拒绝时不写剪贴板的断言。 |
+| `npm test` | 21 files、300/300 Vitest 通过；vendor 56 通过、1 项 Windows 平台跳过。 |
+| `npm run typecheck` / `npm run build` / `git diff --check` | 均 exit 0；构建包含 web 产物。 |
+
+服务端 Task 1 由控制器验证：默认 DPAPI 存储的真实往返通过；使用合成会话 cookie 与 CSRF、伪造外部 Origin 的原值 POST 返回 403、`Cache-Control: no-store`，未泄露原值。旧密钥没有保存完整值，不可恢复；新密钥跨重启复制依赖原 Windows 用户及其 DPAPI 环境。
+
+### 持久化密钥复制的后续浏览器验收（控制器，2026-10-14）
+
+隔离的 `scripts/smoke.ts` fixture 使用 loopback 端口 64653 和合成数据。控制器创建密钥，隐藏新建卡片后从列表复制，浏览器剪贴板与刚创建的原值一致；刷新、切换标签页及退出后重新登录，列表复制仍得到同一原值。仅在该 fixture 中植入的一条旧版仅存哈希密钥显示禁用复制及“旧密钥未保存完整值，请新建密钥后复制。”。桌面 1365×900 与窄屏 390×844 的截图和 DOM 检查确认两行操作与说明可见，document scrollWidth 分别为 1350 和 375，没有水平溢出。截图位于忽略的可视化目录 `C:/Users/98356/.codex/visualizations/2026/10/14/01a1392d-df76-7792-9384-a3b9b9a0e4e5/`，文件为 `key-copy-desktop.png`、`key-copy-mobile.png`。
+
+控制器临时让构建产物中的 `clipboard.writeText` 抛出 `NotAllowedError`：页面只显示失败提示，没有成功提示，按钮恢复可点；再次尝试仍显示失败。受控延迟剪贴板桩使按钮显示“复制中…”且 `disabled=true`，写入完成前没有成功提示。隐藏浏览器中的延迟原生写入一直未完成，检查状态后已导航离开，因此不声称该原生延迟写入成功，也不声称验证了操作系统权限弹窗。单元测试覆盖等待 `writeText` 完成的语义。额外 live HTTP 检查使用有效管理 cookie/CSRF 加外部 Origin，得到 403、`no-store` 且无原值泄漏；最终定向回归也覆盖这一矩阵。以上证据见忽略工作区 [browser-report](../.superpowers/sdd/2026-10-14-persistent-key-copy/browser-report.md)。
+
+### 持久化密钥复制最终修复验证（2026-10-14）
+
+列表复制失败提示改为“复制失败，请稍后重试。”，不再将所有取回失败归因于剪贴板权限，也不显示服务端异常内容。渲染回归直接断言含“复制中…”的按钮处于禁用状态；原值 POST 回归增加有效 cookie/CSRF 下的外部 Origin，要求 403、`no-store`、响应体无原值。请求钩子保留在 Host/Origin 检查之前设置的 API `no-store`，移除后续重复设置，非 API 路径继续应用 CSP。定向 `npm run test:unit -- tests/server.test.ts tests/security.test.ts tests/web-api.test.ts tests/web-view.test.ts` 为 4 files、53/53 通过；`npm test` 为项目 21 files、300/300 通过，vendor 56 通过、1 项 Windows 平台跳过；`npm run typecheck` 与 `npm run build` 均 exit 0。新增的两个回归断言覆盖此前已实现的行为，首次运行即通过，不声称 RED。
 
 此记录保留 Task 4 实现者与控制器在 Codex 重启前的验证，另记录最终修复者在 2026-10-13 新执行的回归与全套验证。Task 4 的恢复收尾依据移交记录及浏览器报告，没有重跑当时整套测试或浏览器；最终修复全套执行如下单独归属。所有账户、密钥、上游事件均为合成 fixture，生产数据目录未初始化，未使用真实 OpenAI 账户完成 OAuth 或推理。
 

@@ -160,6 +160,15 @@ export function registerAdmin(
       .code(201)
       .send(await security.createKey(text(body.name, "name")!));
   });
+  app.post(
+    "/api/admin/keys/:id/secret",
+    { preHandler: auth },
+    async (request) => ({
+      secret: await security.getKeySecret(
+        (request.params as { id: string }).id,
+      ),
+    }),
+  );
   app.delete(
     "/api/admin/keys/:id",
     { preHandler: auth },

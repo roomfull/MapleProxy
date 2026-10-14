@@ -9,8 +9,11 @@ import type {
 export const encryption: CredentialEncryption = {
   id: "test-only",
   isAvailable: () => true,
-  encrypt: (s) => Buffer.from(s),
-  decrypt: (b) => Buffer.from(b).toString(),
+  encrypt: (s) => Buffer.from(s).map((byte) => byte ^ 0xa5),
+  decrypt: (b) =>
+    Buffer.from(b)
+      .map((byte) => byte ^ 0xa5)
+      .toString(),
 };
 export async function fixture(expiresAt = Date.now() + 3600000) {
   const dataDir = await mkdtemp(join(tmpdir(), "maple-runtime-"));

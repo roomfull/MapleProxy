@@ -7,6 +7,8 @@ import {
 } from "node:crypto";
 import { promisify } from "node:util";
 import { AppError } from "../shared/errors.js";
+import { createDpapiEncryption } from "../auth/dpapi.js";
+import type { CredentialEncryption } from "../../vendor/siwc/src/types.js";
 import { JsonStore } from "./store.js";
 
 const derive = promisify(scrypt);
@@ -23,12 +25,18 @@ export interface KeyView {
   name: string;
   prefix: string;
   createdAt: string;
+  canCopy: boolean;
+}
+interface StoredKey extends Omit<KeyView, "canCopy"> {
+  hash: string;
+  encryptedSecret?: string;
+  encryptionId?: string;
 }
 interface SecurityData {
   version: 1;
   revision: string;
   password?: { salt: string; hash: string };
-  keys: (KeyView & { hash: string })[];
+  keys: StoredKey[];
 }
 interface Session {
   csrfToken: string;
@@ -39,7 +47,10 @@ interface Session {
 export class SecurityStore {
   private readonly store: JsonStore<SecurityData>;
   private readonly sessions = new Map<string, Session>();
-  constructor(dataDir: string) {
+  constructor(
+    dataDir: string,
+    private readonly encryption: CredentialEncryption = createDpapiEncryption(),
+  ) {
     this.store = new JsonStore(dataDir, () => ({
       version: 1,
       revision: randomUUID(),
@@ -103,18 +114,82 @@ export class SecurityStore {
         "name",
       );
     const secret = `mp_${random()}`,
-      key: KeyView = {
+      stored: StoredKey = {
         id: randomUUID(),
         name: name.trim(),
         prefix: secret.slice(0, 10),
         createdAt: new Date().toISOString(),
+        hash: digest(secret),
       };
+    try {
+      if (!(await this.encryption.isAvailable()))
+        throw new Error("unavailable");
+      const encrypted = Buffer.from(await this.encryption.encrypt(secret));
+      if (!encrypted.length) throw new Error("empty ciphertext");
+      stored.encryptedSecret = encrypted.toString("base64");
+      stored.encryptionId = this.encryption.id;
+    } catch {
+      throw new AppError(
+        503,
+        "storage_encryption_unavailable",
+        "密钥保护暂不可用，请稍后重试。",
+      );
+    }
     await this.store.update((data) => {
       if (data.keys.length >= 100)
         throw new AppError(409, "key_limit", "最多可保存 100 个访问密钥。");
-      data.keys.push({ ...key, hash: digest(secret) });
+      data.keys.push(stored);
     });
-    return { key, secret };
+    return { key: this.view(stored), secret };
+  }
+  private view(key: StoredKey): KeyView {
+    return {
+      id: key.id,
+      name: key.name,
+      prefix: key.prefix,
+      createdAt: key.createdAt,
+      canCopy:
+        typeof key.encryptedSecret === "string" &&
+        typeof key.encryptionId === "string",
+    };
+  }
+  async getKeySecret(id: string): Promise<string> {
+    const key = (await this.read()).keys.find((item) => item.id === id);
+    if (!key) throw new AppError(404, "key_not_found", "访问密钥不存在。");
+    if (key.encryptedSecret === undefined && key.encryptionId === undefined)
+      throw new AppError(
+        409,
+        "key_secret_unavailable",
+        "旧密钥未保存完整值，请新建密钥后复制。",
+      );
+    try {
+      if (
+        key.encryptionId !== this.encryption.id ||
+        !(await this.encryption.isAvailable())
+      )
+        throw new Error("provider mismatch");
+      const ciphertext = key.encryptedSecret;
+      if (
+        typeof ciphertext !== "string" ||
+        !ciphertext ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+          ciphertext,
+        )
+      )
+        throw new Error("invalid ciphertext");
+      const secret = await this.encryption.decrypt(
+        Buffer.from(ciphertext, "base64"),
+      );
+      if (typeof secret !== "string" || !equal(digest(secret), key.hash))
+        throw new Error("key mismatch");
+      return secret;
+    } catch {
+      throw new AppError(
+        503,
+        "key_secret_unavailable",
+        "密钥暂时无法读取，请稍后重试。",
+      );
+    }
   }
   async acceptKey(key: string): Promise<boolean> {
     if (key.length > 128) return false;
@@ -122,7 +197,7 @@ export class SecurityStore {
     return (await this.read()).keys.some((k) => equal(k.hash, hash));
   }
   async listKeys(): Promise<KeyView[]> {
-    return (await this.read()).keys.map(({ hash: _hash, ...view }) => view);
+    return (await this.read()).keys.map((key) => this.view(key));
   }
   async revokeKey(id: string): Promise<void> {
     await this.store.update((data) => {

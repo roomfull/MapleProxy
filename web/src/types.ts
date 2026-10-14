@@ -17,6 +17,7 @@ export interface Key {
   name: string;
   prefix: string;
   createdAt: string;
+  canCopy: boolean;
 }
 export interface Activity {
   requestId: string;

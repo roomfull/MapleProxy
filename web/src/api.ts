@@ -28,6 +28,16 @@ export class ApiClient {
     await this.request("/logout", "POST");
     this.csrfToken = undefined;
   }
+  async copyKeyToClipboard(
+    id: string,
+    writeText: (value: string) => Promise<void>,
+  ): Promise<void> {
+    const { secret } = await this.request<{ secret: string }>(
+      `/keys/${encodeURIComponent(id)}/secret`,
+      "POST",
+    );
+    await writeText(secret);
+  }
   async request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
     const headers = new Headers();
     if (body !== undefined) headers.set("content-type", "application/json");

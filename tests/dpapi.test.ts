@@ -1,5 +1,9 @@
 import { expect, test } from "vitest";
 import { createDpapiEncryption } from "../src/auth/dpapi.js";
+import { SecurityStore } from "../src/server/security.js";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 test.runIf(process.platform === "win32")(
   "real DPAPI CurrentUser roundtrip rejects tampering",
   async () => {
@@ -17,3 +21,24 @@ test("DPAPI provider fails closed on unsupported platform", async () => {
   expect(await p.isAvailable()).toBe(false);
   await expect(p.encrypt("secret")).rejects.toThrow();
 });
+test.runIf(process.platform === "win32")(
+  "default security store persists DPAPI ciphertext and restores the key",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "maple-dpapi-store-"));
+    try {
+      const created = await new SecurityStore(dir).createKey(
+        "dpapi integration",
+      );
+      const disk = await readFile(join(dir, "security.json"), "utf8");
+      expect(disk).not.toContain(created.secret);
+      expect(disk).not.toContain(
+        Buffer.from(created.secret).toString("base64"),
+      );
+      expect(await new SecurityStore(dir).getKeySecret(created.key.id)).toBe(
+        created.secret,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);

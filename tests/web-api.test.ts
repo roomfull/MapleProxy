@@ -100,3 +100,44 @@ it("keeps the management session and CSRF usable after an upstream 401", async (
   for (const call of calls.slice(2))
     expect(new Headers(call.headers).get("x-csrf-token")).toBe("local-csrf");
 });
+
+it("retrieves a retained key only for clipboard and waits for write completion", async () => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const client = new ApiClient(async (url, init) => {
+    calls.push({ url, init });
+    return Response.json(url.endsWith("login")
+      ? { authenticated: true, csrfToken: "csrf" }
+      : { secret: "mp_private_fixture" });
+  });
+  await client.login("fixture-password");
+  let resolveWrite!: () => void;
+  const written = new Promise<void>((resolve) => { resolveWrite = resolve; });
+  const write = vi.fn(() => written);
+  let settled = false;
+  const copy = client.copyKeyToClipboard("id /?", write).then(() => { settled = true; });
+  await vi.waitFor(() => expect(write).toHaveBeenCalledWith("mp_private_fixture"));
+  expect(settled).toBe(false);
+  expect(calls[1]?.url).toBe("/api/admin/keys/id%20%2F%3F/secret");
+  expect(calls[1]?.init.method).toBe("POST");
+  expect(new Headers(calls[1]?.init.headers).get("x-csrf-token")).toBe("csrf");
+  expect(JSON.stringify(calls)).not.toContain("mp_private_fixture");
+  resolveWrite();
+  await copy;
+  expect(settled).toBe(true);
+});
+
+it("propagates clipboard denial so success cannot be shown and a retry can succeed", async () => {
+  const client = new ApiClient(async () => Response.json({ secret: "mp_fixture" }));
+  const denied = vi.fn(async () => { throw new Error("clipboard denied"); });
+  await expect(client.copyKeyToClipboard("key", denied)).rejects.toThrow("clipboard denied");
+  const write = vi.fn(async () => {});
+  await expect(client.copyKeyToClipboard("key", write)).resolves.toBeUndefined();
+  expect(write).toHaveBeenCalledWith("mp_fixture");
+});
+
+it("does not write clipboard when protected retrieval fails", async () => {
+  const client = new ApiClient(async () => Response.json({ error: { message: "旧密钥无法复制" } }, { status: 409 }));
+  const write = vi.fn(async () => {});
+  await expect(client.copyKeyToClipboard("legacy", write)).rejects.toThrow("旧密钥无法复制");
+  expect(write).not.toHaveBeenCalled();
+});

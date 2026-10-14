@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -8,6 +8,7 @@ import { AppError } from "../src/shared/errors.js";
 import { SecurityStore } from "../src/server/security.js";
 import { createApp } from "../src/server/app.js";
 import { ApiClient } from "../web/src/api.js";
+import { encryption } from "./helpers.js";
 
 const host = "localhost:8317",
   origin = "http://localhost:8317";
@@ -74,12 +75,12 @@ const runtime: AccountRuntime = {
 };
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "maple-http-"));
-  security = new SecurityStore(dir);
+  security = new SecurityStore(dir, encryption);
   selected = "a";
   calls = [];
   failure = undefined;
   await security.setPassword("a strong local password");
-  app = await createApp({ runtime, dataDir: dir });
+  app = await createApp({ runtime, dataDir: dir, encryption });
   const login = await app.inject({
     method: "POST",
     url: "/api/admin/login",
@@ -97,6 +98,146 @@ afterEach(async () => {
 });
 const admin = () => ({ host, origin, cookie, "x-csrf-token": csrf });
 const inference = () => ({ host, authorization: `Bearer ${secret}` });
+describe("protected key recovery", () => {
+  it("recovers a created key after relogin and app restart without weakening inference auth", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/keys",
+      headers: admin(),
+      payload: { name: "recovered" },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().key.canCopy).toBe(true);
+    const id = created.json().key.id;
+    const original = created.json().secret;
+    expect(
+      (await app.inject({ url: "/api/admin/keys", headers: admin() }))
+        .json()
+        .keys.find((key: { id: string }) => key.id === id).canCopy,
+    ).toBe(true);
+    await app.close();
+    app = await createApp({ runtime, dataDir: dir, encryption });
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/admin/login",
+      headers: { host, origin },
+      payload: { password: "a strong local password" },
+    });
+    cookie = String(login.headers["set-cookie"]).split(";")[0]!;
+    csrf = login.json().csrfToken;
+    const recovered = await app.inject({
+      method: "POST",
+      url: `/api/admin/keys/${id}/secret`,
+      headers: admin(),
+    });
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.headers["cache-control"]).toBe("no-store");
+    expect(recovered.json()).toEqual({ secret: original });
+    expect(
+      (
+        await app.inject({
+          url: "/v1/models",
+          headers: { host, authorization: `Bearer ${original}` },
+        })
+      ).statusCode,
+    ).toBe(200);
+  });
+  it("rejects unauthenticated, inference bearer, missing Origin or CSRF, and GET requests", async () => {
+    const id = (await security.listKeys())[0]!.id;
+    for (const headers of [
+      { host, origin, "x-csrf-token": csrf },
+      { ...inference(), origin, "x-csrf-token": csrf },
+      { host, cookie, "x-csrf-token": csrf },
+      { host, origin, cookie },
+      { host, origin, cookie, "x-csrf-token": "wrong" },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/admin/keys/${id}/secret`,
+        headers,
+      });
+      expect([401, 403]).toContain(response.statusCode);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.body).not.toContain(secret);
+    }
+    const foreignOrigin = await app.inject({
+      method: "POST",
+      url: `/api/admin/keys/${id}/secret`,
+      headers: { ...admin(), origin: "https://example.org" },
+    });
+    expect(foreignOrigin.statusCode).toBe(403);
+    expect(foreignOrigin.headers["cache-control"]).toBe("no-store");
+    expect(foreignOrigin.body).not.toContain(secret);
+    const get = await app.inject({
+      url: `/api/admin/keys/${id}/secret`,
+      headers: admin(),
+    });
+    expect(get.statusCode).toBe(404);
+    expect(get.headers["cache-control"]).toBe("no-store");
+  });
+  it("rejects an expired admin session and preserves no-store", async () => {
+    const id = (await security.listKeys())[0]!.id;
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + 12 * 3600_000 + 1);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/admin/keys/${id}/secret`,
+        headers: admin(),
+      });
+      expect(response.statusCode).toBe(401);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.body).not.toContain(secret);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it("maps missing, legacy and corrupt keys to safe errors without exposing stored data", async () => {
+    const path = join(dir, "security.json");
+    const created = await security.createKey("legacy");
+    const data = JSON.parse(await readFile(path, "utf8"));
+    const legacy = data.keys.find(
+      (key: { id: string }) => key.id === created.key.id,
+    );
+    delete legacy.encryptedSecret;
+    delete legacy.encryptionId;
+    await writeFile(path, JSON.stringify(data));
+    const retrieve = (id: string) =>
+      app.inject({
+        method: "POST",
+        url: `/api/admin/keys/${id}/secret`,
+        headers: admin(),
+      });
+    const unavailable = await retrieve(created.key.id);
+    expect(unavailable.statusCode).toBe(409);
+    expect(unavailable.headers["cache-control"]).toBe("no-store");
+    expect(
+      (
+        await app.inject({
+          url: "/v1/models",
+          headers: { host, authorization: `Bearer ${created.secret}` },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const corrupted = JSON.parse(await readFile(path, "utf8"));
+    corrupted.keys.find(
+      (key: { id: string }) => key.id === created.key.id,
+    ).encryptedSecret = "!!";
+    await writeFile(path, JSON.stringify(corrupted));
+    const failed = await retrieve(created.key.id);
+    expect(failed.statusCode).toBe(503);
+    expect(failed.headers["cache-control"]).toBe("no-store");
+    for (const response of [unavailable, failed]) {
+      expect(response.body).not.toContain(created.secret);
+      expect(response.body).not.toContain("encryptedSecret");
+    }
+    await security.revokeKey(created.key.id);
+    const missing = await retrieve(created.key.id);
+    expect(missing.statusCode).toBe(404);
+    expect(missing.headers["cache-control"]).toBe("no-store");
+  });
+});
 describe("HTTP isolation and local origin protections", () => {
   it("identifies local requests even when the Host guard rejects before normal headers", async () => {
     const response = await app.inject({

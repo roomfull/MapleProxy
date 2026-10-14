@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SecurityStore } from "../src/server/security.js";
+import { encryption } from "./helpers.js";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -12,7 +13,7 @@ afterEach(async () => {
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "maple-security-"));
   dirs.push(dir);
-  return { dir, store: new SecurityStore(dir) };
+  return { dir, store: new SecurityStore(dir, encryption) };
 }
 describe("local security store", () => {
   it("accepts a six-character password and rejects lengths outside 6–1024", async () => {
@@ -43,9 +44,12 @@ describe("local security store", () => {
       new SecurityStore(dir).verifyPassword("a long private password"),
     ).resolves.toBe(true);
   });
-  it("shows an API key once and revokes its persisted digest", async () => {
+  it("authenticates a created API key and revokes its persisted record", async () => {
     const { dir, store } = await fixture();
     const created = await store.createKey("editor");
+    expect(Object.keys(created.key).sort()).toEqual(
+      ["canCopy", "createdAt", "id", "name", "prefix"].sort(),
+    );
     expect(await store.acceptKey(created.secret)).toBe(true);
     expect(await store.acceptKey("wrong")).toBe(false);
     expect(JSON.stringify(await store.listKeys())).not.toContain(
@@ -56,6 +60,94 @@ describe("local security store", () => {
     );
     await new SecurityStore(dir).revokeKey(created.key.id);
     expect(await store.acceptKey(created.secret)).toBe(false);
+  });
+  it("restores the original key through another store without exposing it in views or on disk", async () => {
+    const { dir, store } = await fixture();
+    const created = await store.createKey("editor");
+    const restored = new SecurityStore(dir, encryption);
+    expect(await restored.getKeySecret(created.key.id)).toBe(created.secret);
+    expect(Object.keys((await restored.listKeys())[0]!).sort()).toEqual(
+      ["canCopy", "createdAt", "id", "name", "prefix"].sort(),
+    );
+    expect((await restored.listKeys())[0]?.canCopy).toBe(true);
+    const disk = await readFile(join(dir, "security.json"), "utf8");
+    expect(disk).not.toContain(created.secret);
+    expect(disk).not.toContain(Buffer.from(created.secret).toString("base64"));
+  });
+  it("keeps a legacy hash-only key usable but cannot recover its original", async () => {
+    const { dir, store } = await fixture();
+    const created = await store.createKey("legacy");
+    const path = join(dir, "security.json");
+    const data = JSON.parse(await readFile(path, "utf8"));
+    delete data.keys[0].encryptedSecret;
+    delete data.keys[0].encryptionId;
+    await writeFile(path, JSON.stringify(data));
+    expect(await store.acceptKey(created.secret)).toBe(true);
+    expect((await store.listKeys())[0]?.canCopy).toBe(false);
+    await expect(store.getKeySecret(created.key.id)).rejects.toMatchObject({
+      status: 409,
+    });
+    await store.revokeKey(created.key.id);
+    await expect(store.getKeySecret(created.key.id)).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(await store.acceptKey(created.secret)).toBe(false);
+  });
+  it("creates no record when encryption is unavailable or throws", async () => {
+    const { dir } = await fixture();
+    for (const bad of [
+      { ...encryption, isAvailable: () => false },
+      {
+        ...encryption,
+        encrypt: () => {
+          throw new Error("private provider details");
+        },
+      },
+    ]) {
+      const store = new SecurityStore(dir, bad);
+      await expect(store.createKey("failed")).rejects.toMatchObject({
+        status: 503,
+      });
+      expect(await store.listKeys()).toEqual([]);
+    }
+  });
+  it.each(["malformed", "provider", "hash"])(
+    "fails closed for %s key corruption while other keys work",
+    async (fault) => {
+      const { dir, store } = await fixture();
+      const bad = await store.createKey("bad");
+      const good = await store.createKey("good");
+      const path = join(dir, "security.json");
+      const data = JSON.parse(await readFile(path, "utf8"));
+      if (fault === "malformed") data.keys[0].encryptedSecret = "!!";
+      if (fault === "provider") data.keys[0].encryptionId = "other-provider";
+      if (fault === "hash") data.keys[0].hash = "0".repeat(64);
+      await writeFile(path, JSON.stringify(data));
+      const before = await readFile(path);
+      await expect(store.getKeySecret(bad.key.id)).rejects.toMatchObject({
+        status: 503,
+      });
+      expect(await readFile(path)).toEqual(before);
+      expect(await store.getKeySecret(good.key.id)).toBe(good.secret);
+    },
+  );
+  it("hides decrypt provider errors and preserves stored ciphertext", async () => {
+    const { dir, store } = await fixture();
+    const created = await store.createKey("provider failure");
+    const path = join(dir, "security.json");
+    const before = await readFile(path);
+    const broken = new SecurityStore(dir, {
+      ...encryption,
+      decrypt: () => {
+        throw new Error("private provider details");
+      },
+    });
+    await expect(broken.getKeySecret(created.key.id)).rejects.toMatchObject({
+      status: 503,
+      code: "key_secret_unavailable",
+    });
+    expect(await readFile(path)).toEqual(before);
+    expect(await store.getKeySecret(created.key.id)).toBe(created.secret);
   });
   it("expires opaque sessions and invalidates them on external password reset", async () => {
     const { dir, store } = await fixture();
