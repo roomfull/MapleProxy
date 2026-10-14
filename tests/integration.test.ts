@@ -466,16 +466,18 @@ it.each(["max_output_tokens", "content_filter"])(
 );
 
 it("pauses a real socket producer under backpressure, then aborts and closes it on disconnect", async () => {
-  // Keep the HTTP server real; the generator is a measured synthetic upstream for deterministic demand assertions.
+  // Keep the HTTP server real; measure bounded demand and cancellation of a synthetic upstream.
   let produced = 0,
     returned = false,
     aborted = false,
     blockedWrites = 0;
+  let producedAtAbort: number | undefined;
   const original = runtime.requestResponses;
   runtime.requestResponses = async ({ signal }) => {
     signal!.addEventListener(
       "abort",
       () => {
+        producedAtAbort = produced;
         aborted = true;
       },
       { once: true },
@@ -486,7 +488,8 @@ it("pauses a real socket producer under backpressure, then aborts and closes it 
       headers: new Headers(),
       events: (async function* () {
         try {
-          for (; produced < 1024; produced++)
+          while (produced < 1024) {
+            produced++;
             yield {
               type: "response.output_text.delta",
               item_id: "msg_local",
@@ -494,6 +497,7 @@ it("pauses a real socket producer under backpressure, then aborts and closes it 
               content_index: 0,
               delta: "x".repeat(128 * 1024),
             };
+          }
         } finally {
           returned = true;
         }
@@ -538,7 +542,12 @@ it("pauses a real socket producer under backpressure, then aborts and closes it 
     expect(produced).toBe(pausedAt);
     response!.destroy();
     await expect.poll(() => aborted && returned, { timeout: 2000 }).toBe(true);
-    expect(produced).toBe(pausedAt);
+    // Local destroy initiates disconnect; TCP may drain before the server sees it.
+    // Once the server observes abort, finalization must consume no further events.
+    expect(produced).toBe(producedAtAbort);
+    expect(produced).toBeLessThan(1024);
+    await immediate();
+    expect(produced).toBe(producedAtAbort);
   } finally {
     response?.destroy();
     request.destroy();
