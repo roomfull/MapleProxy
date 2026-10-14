@@ -3,6 +3,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Keys, ActivityPanel, Accounts } from "../web/src/panels.js";
 import type { Job } from "../web/src/types.js";
+import { ApiClient } from "../web/src/api.js";
+import { SignInController } from "../web/src/sign-in-controller.js";
 
 const manualJob = {
   id: "fixture-job",
@@ -14,7 +16,7 @@ const manualJob = {
   options: { mode: "manual", profileId: "a", reconsent: true },
   authorizationUrl: "https://example.invalid/authorize?state=synthetic",
 } as Job;
-const accountHtml = (job: Job) =>
+const accountHtml = (job?: Job, busy = "") =>
   renderToStaticMarkup(
     createElement(Accounts, {
       resource: {
@@ -30,7 +32,7 @@ const accountHtml = (job: Job) =>
           },
         ],
       },
-      busy: "",
+      busy,
       job,
       onSignIn() {},
       onRetry() {},
@@ -41,6 +43,44 @@ const accountHtml = (job: Job) =>
       onSubmitCallback() {},
     }),
   );
+it("disables login and reauthorization controls while active recovery is pending", async () => {
+  let finish!: (response: Response) => void;
+  const controller = new SignInController(
+    new ApiClient(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    ),
+    () => {},
+  );
+  try {
+    const recovery = controller.activate();
+    const controls = () =>
+      accountHtml(
+        controller.state.job,
+        controller.state.working ? "sign-in" : "",
+      ).match(/<button\b[^>]*>[\s\S]*?<\/button>/g) ?? [];
+    const pendingButtons = controls();
+    finish(Response.json({ job: null }));
+    await recovery;
+    for (const label of [
+      "Continue with ChatGPT",
+      "复制链接登录",
+      "重新授权",
+      "复制链接重新授权",
+    ]) {
+      expect(pendingButtons.find((button) => button.includes(label))).toContain(
+        'disabled=""',
+      );
+      expect(controls().find((button) => button.includes(label))).not.toContain(
+        'disabled=""',
+      );
+    }
+  } finally {
+    controller.deactivate();
+  }
+});
 it("offers separate manual login and reauthorization with full callback guidance", () => {
   const html = accountHtml(manualJob);
   for (const text of [

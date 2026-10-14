@@ -45,6 +45,19 @@ stdin 的 callback/retry/fail 打印当前合成回调，rotate 更新链接，c
 
 **真实跨设备 OAuth 仍待用户亲自验证**：在另一台设备完成官方授权、复制地址栏完整回环 URL、本机提交并完成身份验证；合成 fixture 通过不证明实际账户权限或远端浏览器行为。下文其他浏览器记录属于此前功能阶段，与本轮跨设备验收分别记录。
 
+### 跨设备登录最终审查修复（2026-10-14）
+
+最终审查发现 P2：active 恢复请求未结束时，新登录可使恢复快照失效；如果服务端拒绝新登录为 409，页面会丢失原任务和轮询。修复在恢复开始时同步设置现有 `working`，通过 App 已有的 busy 传递禁用登录和重新授权按钮；恢复完成或失败后仅对仍有效的会话/版本释放 busy。新登录不再发送无必要的 POST，原任务恢复后可继续轮询和提交。失败提示明确建议刷新页面或重新登录，退出后的迟到恢复及旧响应隔离继续保留。
+
+| 最终修复者本轮检查 | 结果 |
+| --- | --- |
+| RED：`npx vitest run tests/web-sign-in.test.ts tests/web-view.test.ts` | 2 files、3 failed / 19 passed；分别证明原任务丢失、恢复未设 busy、Accounts 登录按钮未禁用。 |
+| GREEN：`npx vitest run tests/web-api.test.ts tests/web-sign-in.test.ts tests/web-view.test.ts tests/web-sign-in-copy.test.ts` | 4 files、33/33 通过，覆盖延迟恢复时阻止新登录、原任务可轮询/提交、失败释放、实际控件禁用/释放及跨退出的旧恢复隔离。 |
+| `npm run typecheck` / `npm run build` | 均 exit 0，包含 vendor/server/web。 |
+| Prettier `--check` / `git diff --check` | 三个修改的前端/测试文件格式通过；差异空白检查 exit 0。 |
+
+本修复没有重新操作浏览器，前述交互验收属于修复前的功能证据。初次 active 恢复失败的自动重试仍未实现，用户可按提示刷新或重新登录；后端缺失 state/path 的独立测试矩阵补项经控制器判定为非阻塞并延期，未声称已新增这些用例。后端严格回调校验实现保持原样，本轮只修复前端恢复竞态，不使用真实 OAuth 或生产数据。
+
 ## 2026-10-14 持久化密钥复制（Task 2 前端与文档）
 
 本轮在隔离 worktree 使用合成密钥，前端通过 `canCopy` 区分可复制与旧密钥。列表仅在点击后向受保护的 `POST /api/admin/keys/:id/secret` 取回原值并直接交给剪贴板；复制成功提示等待 `writeText` 完成，失败提示可重试。新建卡片与列表均不把原值拼入请求示例。此段保留 Task 2 当时的记录；随后控制器完成的本功能浏览器验收见下文。

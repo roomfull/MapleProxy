@@ -61,6 +61,8 @@ export class SignInController {
     this.active = true;
     const epoch = ++this.epoch,
       revision = ++this.revision;
+    // Do not let a new start invalidate recovery before we know the active job.
+    this.update({ working: true, error: undefined });
     try {
       const { job } = await this.api.activeSignIn();
       if (!this.valid(epoch, revision)) return;
@@ -68,7 +70,11 @@ export class SignInController {
       this.schedule(epoch, 1000);
     } catch (error) {
       if (this.valid(epoch, revision))
-        this.update({ error: `登录任务恢复失败：${(error as Error).message}` });
+        this.update({
+          error: `登录任务恢复失败：${(error as Error).message}。请刷新页面或重新登录后恢复。`,
+        });
+    } finally {
+      if (this.valid(epoch, revision)) this.update({ working: false });
     }
   }
   deactivate() {

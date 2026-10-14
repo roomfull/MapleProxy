@@ -172,19 +172,101 @@ it("clears callback on link rotation and terminal status and retries the origina
   expect(JSON.parse(calls[0]!.body as string)).toEqual(job().options);
   controller.deactivate();
 });
-it("ignores late restore after starting a newer job", async () => {
+it("blocks new start during delayed active recovery and preserves an actionable polled job", async () => {
+  vi.useFakeTimers();
   const restored = deferred<Response>();
-  const client = new ApiClient(async (url) =>
-    url.endsWith("/active")
-      ? restored.promise
-      : Response.json(job({ id: "job2" })),
-  );
+  let starts = 0;
+  let reads = 0;
+  let submits = 0;
+  const changes: boolean[] = [];
+  const client = new ApiClient(async (url) => {
+    if (url.endsWith("/active")) return restored.promise;
+    if (url.endsWith("/sign-in")) {
+      starts++;
+      return Response.json(
+        { error: { code: "sign_in_busy", message: "Active job exists" } },
+        { status: 409 },
+      );
+    }
+    if (url.endsWith("/callback")) {
+      submits++;
+      return Response.json(
+        job({ phase: "exchanging", authorizationUrl: undefined }),
+      );
+    }
+    reads++;
+    return Response.json(job());
+  });
+  const controller = new SignInController(client, (state) => {
+    changes.push(state.working);
+  });
+  try {
+    const recovery = controller.activate();
+    await controller.start({ mode: "manual", newProfile: true });
+    restored.resolve(Response.json({ job: job() }));
+    await recovery;
+    expect(controller.state.job).toEqual(job());
+    expect(starts).toBe(0);
+    expect(changes[0]).toBe(true);
+    expect(controller.state.working).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reads).toBe(1);
+    controller.setCallback("synthetic callback");
+    await controller.submit();
+    expect(submits).toBe(1);
+    expect(controller.state.job?.phase).toBe("exchanging");
+  } finally {
+    controller.deactivate();
+  }
+});
+it("releases recovery busy state on failure and explains refresh or relogin recovery", async () => {
+  const restored = deferred<Response>();
+  let starts = 0;
+  const client = new ApiClient(async (url) => {
+    if (url.endsWith("/active")) return restored.promise;
+    starts++;
+    return Response.json(job({ id: "job2" }));
+  });
+  const controller = new SignInController(client, () => {});
+  try {
+    const recovery = controller.activate();
+    const recovering = controller.state.working;
+    restored.resolve(
+      Response.json(
+        { error: { message: "Synthetic read failure" } },
+        { status: 503 },
+      ),
+    );
+    await recovery;
+    expect(recovering).toBe(true);
+    expect(controller.state.working).toBe(false);
+    expect(controller.state.error).toContain("刷新页面或重新登录");
+    await controller.start({ mode: "manual", newProfile: true });
+    expect(starts).toBe(1);
+    expect(controller.state.job?.id).toBe("job2");
+  } finally {
+    controller.deactivate();
+  }
+});
+it("ignores late recovery from before logout after a new session starts a newer job", async () => {
+  const restored = deferred<Response>();
+  let recoveries = 0;
+  const client = new ApiClient(async (url) => {
+    if (url.endsWith("/active"))
+      return ++recoveries === 1
+        ? restored.promise
+        : Response.json({ job: null });
+    return Response.json(job({ id: "job2" }));
+  });
   const controller = new SignInController(client, () => {});
   const recovery = controller.activate();
+  controller.deactivate();
+  await controller.activate();
   await controller.start({ mode: "manual", newProfile: true });
   restored.resolve(Response.json({ job: job() }));
   await recovery;
   expect(controller.state.job?.id).toBe("job2");
+  expect(controller.state.working).toBe(false);
   controller.deactivate();
 });
 it.each(["restore", "start", "submit", "cancel", "poll"])(
