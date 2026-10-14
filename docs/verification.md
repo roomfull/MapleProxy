@@ -55,8 +55,11 @@ stdin 的 callback/retry/fail 打印当前合成回调，rotate 更新链接，c
 | GREEN：`npx vitest run tests/web-api.test.ts tests/web-sign-in.test.ts tests/web-view.test.ts tests/web-sign-in-copy.test.ts` | 4 files、33/33 通过，覆盖延迟恢复时阻止新登录、原任务可轮询/提交、失败释放、实际控件禁用/释放及跨退出的旧恢复隔离。 |
 | `npm run typecheck` / `npm run build` | 均 exit 0，包含 vendor/server/web。 |
 | Prettier `--check` / `git diff --check` | 三个修改的前端/测试文件格式通过；差异空白检查 exit 0。 |
+| 控制器修复后全套回归：`npm test` | 25 files、346/346 Vitest 通过；vendor 56 通过、1 项 Windows 平台跳过、0 失败。 |
 
 本修复没有重新操作浏览器，前述交互验收属于修复前的功能证据。初次 active 恢复失败的自动重试仍未实现，用户可按提示刷新或重新登录；后端缺失 state/path 的独立测试矩阵补项经控制器判定为非阻塞并延期，未声称已新增这些用例。后端严格回调校验实现保持原样，本轮只修复前端恢复竞态，不使用真实 OAuth 或生产数据。
+
+前后端分项独立审查通过；整分支审查发现的唯一 P2 已由 `cab261f` 修复，独立复审确认恢复期间的启动守卫、有效会话内的 busy 释放和退出后的旧响应隔离均符合要求，无新增阻断问题。最终代码验收完成，真实跨设备 OAuth 仍待用户执行；临时审查包按工作流程清理，Git 历史和本文件保留验证记录。正常隔离预览及内置浏览器标签页保留打开。
 
 ## 2026-10-14 持久化密钥复制（Task 2 前端与文档）
 

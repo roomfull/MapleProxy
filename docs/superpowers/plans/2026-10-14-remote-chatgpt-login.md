@@ -43,7 +43,7 @@ Run npm test, npm run typecheck, npm run build, node .github/scripts/verify-lice
 
 ## Progress
 
-- [ ] Task 1 implemented and reviewed.
-- [ ] Task 2 implemented and reviewed.
-- [ ] Full checks, browser verification and whole-branch review.
+- [x] Task 1 implemented and reviewed (6307f7d; focused 81/81 and original authorization 4/4 passed).
+- [x] Task 2 implemented and reviewed (1efef98; browser fallback evidence f5d08e5; recovery race fix cab261f).
+- [x] Full checks, browser verification and whole-branch review (346 project tests; vendor 56 passed/1 platform skip; typecheck/build/license/notices passed; final P2 fixed and independently re-reviewed).
 - [ ] User-performed real cross-device OAuth (not part of automated acceptance).
