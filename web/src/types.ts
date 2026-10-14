@@ -43,10 +43,23 @@ export interface Activity {
   responseStatus?: "completed" | "incomplete";
   incompleteReason?: "max_output_tokens" | "content_filter" | "unknown";
 }
+export interface SignInRequest {
+  mode?: "browser" | "manual";
+  profileId?: string;
+  newProfile?: boolean;
+  label?: string;
+  reconsent?: boolean;
+}
 export interface Job {
   id: string;
   status: "pending" | "completed" | "failed" | "cancelled";
   code?: string;
+  createdAt: string;
+  mode: "browser" | "manual";
+  expiresAt: string;
+  phase: "preparing" | "awaiting_callback" | "exchanging";
+  options: SignInRequest & { mode: "browser" | "manual" };
+  authorizationUrl?: string;
 }
 export interface Resource<T> {
   data: T[];

@@ -1,5 +1,47 @@
 # 验证记录（2026-10-14）
 
+## 2026-10-14 跨设备 ChatGPT 登录（Task 2 仪表盘、夹具与文档）
+
+前端按 Task 1 已冻结的 Job/SignInRequest/API 实现复制链接登录与重新授权、按原 expiresAt 倒计时、完整回调提交、纠错、取消、原 options 重试和 active 恢复。回调和授权链接只在前端内存中；退出或本地会话失效同步清空，并通过请求版本及最新轮询序号拒绝旧恢复、POST、状态响应。API 也隔离旧会话的迟到 401/CSRF，防止重新登录后被旧请求覆盖。
+
+| Task 2 新执行的检查 | 结果 |
+| --- | --- |
+| RED：`npx vitest run tests/web-api.test.ts tests/web-view.test.ts` | 4 failed / 13 passed：缺少 typed sign-in helper、手动入口及 preparing/exchanging 区分。 |
+| RED：`npx vitest run tests/web-sign-in.test.ts` | 接口骨架上 8 failed / 1 passed：恢复、重复提交、旧轮询、链接轮换、原参数重试和退出隔离缺失；1 项原有空状态通过不作为 RED。 |
+| RED：`npx vitest run tests/web-sign-in-copy.test.ts` | 1 failed：缺少实际 UI 共用的剪贴板拒绝与手动选择 helper。 |
+| RED：`npx vitest run tests/web-api.test.ts tests/web-sign-in.test.ts` | 扩展竞态回归 3 failed / 17 passed：旧会话 401 清空新会话、bootstrap 恢复旧 CSRF、重叠旧轮询覆盖更新链接。 |
+| RED：`npx vitest run tests/smoke-fixture.test.ts -t 'supports isolated manual'` | 1 failed / 3 skipped：原 fixture 不产生 awaiting_callback。使用提权执行临时文件原子 rename 与真实 loopback；失败来自断言。 |
+| GREEN：`npx vitest run tests/web-api.test.ts tests/web-view.test.ts tests/web-sign-in.test.ts tests/web-sign-in-copy.test.ts` | 4 files、30/30 通过。 |
+| GREEN：`npx vitest run tests/smoke-fixture.test.ts` | 4/4 通过，真实本机 HTTP 验证无效回调纠错、两秒交换、retry 新链接与不变截止时间、合成账户完成和取消。 |
+| `npm run typecheck` / `npm run build` | exit 0，包含 vendor/server/web。 |
+| 恢复收尾：Prettier `--check` / `git diff --check` | 14 个 Task 2 脚本、测试及前端文件格式检查通过；差异空白检查 exit 0。仅补充文档，未重跑先前已通过的测试及构建。 |
+| 控制器本轮全套验收：`npm test` | 25 files、343/343 Vitest 通过；vendor 56 通过、1 项 Windows 平台跳过。 |
+| 控制器本轮全套验收：`npm run typecheck` / `npm run build` | 均 exit 0。 |
+| 控制器本轮许可证与 notices 验收 | 许可证检查验证 12 个 artifacts；`npm run notices:generate` exit 0，生成结果无漂移。 |
+
+此 Task 2 自动测试只使用合成账户、回调、密码和临时目录；没有 provider 请求，也没有生产测试开关。剪贴板拒绝通过实际 UI 使用的函数注入拒绝 Promise 验证，成功提示与失败提示互斥；SSR 验证阶段内容和只读 URL。它们不替代浏览器交互测试。
+
+### 跨设备登录浏览器验收（控制器，2026-10-14）
+
+控制器使用 `npm run smoke` 的隔离合成 fixture 完成本轮交互验收，收尾者依据移交证据记录，未重新操作浏览器或重跑上述已通过检查。
+
+| 操作 | 已观察结果 |
+| --- | --- |
+| 复制授权链接 | 浏览器剪贴板内容与页面当前完整授权 URL 一致。 |
+| 无效回调纠错 | 错误提示可见，原输入保留，可以修改后再次提交。 |
+| 刷新 / 退出后重新登录 | 恢复同一任务、同一链接及原截止时间，倒计时继续依据原期限。 |
+| 合成 retry 回调 | 生成新链接，输入清空，显示“授权链接已更新，请重新复制”，期限未重置。 |
+| 合成成功回调 | 交换完成后显示成功并刷新账号列表。 |
+| 既有 B 账号重新授权、取消及重试 | 保留原 profileId 与重新授权选项，重试仍作用于 B。 |
+| 原浏览器模式 | Continue with ChatGPT 入口可用，显示原 5 分钟期限。 |
+| 桌面 / 窄屏布局及控制台 | 1365×900 与 390×844 无水平溢出；浏览器 console warning/error 为空。 |
+
+截图保存在忽略的可视化目录 `C:/Users/98356/.codex/visualizations/2026/10/14/01a1395b-3c4a-7111-a5d1-5f88738b3921/`，文件为 `remote-login-desktop.jpg`、`remote-login-mobile.jpg`。剪贴板失败回退只通过注入拒绝 Promise 的单元测试验证，未验证浏览器原生权限拒绝或操作系统权限弹窗，也不声称已完成原生拒绝后的手动选择交互。遵从用户要求，未关闭内置浏览器或其标签页。
+
+stdin 的 callback/retry/fail 打印当前合成回调，rotate 更新链接，complete 完成浏览器模式，stop 正常关闭隔离服务；具体格式见 [README](../README.md)。
+
+**真实跨设备 OAuth 仍待用户亲自验证**：在另一台设备完成官方授权、复制地址栏完整回环 URL、本机提交并完成身份验证；合成 fixture 通过不证明实际账户权限或远端浏览器行为。下文其他浏览器记录属于此前功能阶段，与本轮跨设备验收分别记录。
+
 ## 2026-10-14 持久化密钥复制（Task 2 前端与文档）
 
 本轮在隔离 worktree 使用合成密钥，前端通过 `canCopy` 区分可复制与旧密钥。列表仅在点击后向受保护的 `POST /api/admin/keys/:id/secret` 取回原值并直接交给剪贴板；复制成功提示等待 `writeText` 完成，失败提示可重试。新建卡片与列表均不把原值拼入请求示例。此段保留 Task 2 当时的记录；随后控制器完成的本功能浏览器验收见下文。

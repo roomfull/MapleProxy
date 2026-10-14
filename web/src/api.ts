@@ -1,3 +1,4 @@
+import type { Job, SignInRequest } from "./types.js";
 export interface SessionView {
   configured: boolean;
   authenticated: boolean;
@@ -5,6 +6,7 @@ export interface SessionView {
 }
 export class ApiClient {
   private csrfToken?: string;
+  private authGeneration = 0;
   onExpired?: () => void;
   constructor(
     private readonly fetcher: (
@@ -13,20 +15,25 @@ export class ApiClient {
     ) => Promise<Response> = (input, init) => globalThis.fetch(input, init),
   ) {}
   async session(): Promise<SessionView> {
+    const generation = this.authGeneration;
     const session = await this.request<SessionView>("/session");
-    this.csrfToken = session.csrfToken;
+    if (generation === this.authGeneration) this.csrfToken = session.csrfToken;
     return session;
   }
   async login(password: string): Promise<SessionView> {
+    const generation = ++this.authGeneration;
     const session = await this.request<SessionView>("/login", "POST", {
       password,
     });
-    this.csrfToken = session.csrfToken;
+    if (generation === this.authGeneration) this.csrfToken = session.csrfToken;
     return session;
   }
   async logout(): Promise<void> {
-    await this.request("/logout", "POST");
+    this.authGeneration++;
+    // Capture the authenticated headers before clearing transient session state.
+    const logout = this.request("/logout", "POST");
     this.csrfToken = undefined;
+    await logout;
   }
   async copyKeyToClipboard(
     id: string,
@@ -38,7 +45,25 @@ export class ApiClient {
     );
     await writeText(secret);
   }
+  startSignIn(options: SignInRequest): Promise<Job> {
+    return this.request("/sign-in", "POST", options);
+  }
+  activeSignIn(): Promise<{ job: Job | null }> {
+    return this.request("/sign-in/active");
+  }
+  signInStatus(id: string): Promise<Job> {
+    return this.request(`/sign-in/${encodeURIComponent(id)}`);
+  }
+  submitSignInCallback(id: string, callbackUrl: string): Promise<Job> {
+    return this.request(`/sign-in/${encodeURIComponent(id)}/callback`, "POST", {
+      callbackUrl,
+    });
+  }
+  cancelSignIn(id: string): Promise<Job> {
+    return this.request(`/sign-in/${encodeURIComponent(id)}`, "DELETE");
+  }
   async request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+    const generation = this.authGeneration;
     const headers = new Headers();
     if (body !== undefined) headers.set("content-type", "application/json");
     if (method !== "GET" && this.csrfToken)
@@ -55,9 +80,11 @@ export class ApiClient {
       if (
         response.status === 401 &&
         data.error?.code === "admin_unauthorized" &&
-        path !== "/login"
+        path !== "/login" &&
+        generation === this.authGeneration
       ) {
         this.csrfToken = undefined;
+        this.authGeneration++;
         this.onExpired?.();
       }
       throw new Error(data.error?.message ?? `请求失败 (${response.status})`);

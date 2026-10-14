@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiClient } from "./api.js";
 import type { SessionView } from "./api.js";
-import type { Account, Activity, Job, Key, Model, Resource } from "./types.js";
+import type {
+  Account,
+  Activity,
+  Key,
+  Model,
+  Resource,
+  SignInRequest,
+} from "./types.js";
 import { Accounts, ActivityPanel, Keys, Models } from "./panels.js";
+import { SignInController } from "./sign-in-controller.js";
+import type { SignInState } from "./sign-in-controller.js";
 
 const api = new ApiClient();
 const empty = <T,>(): Resource<T> => ({ data: [], loading: true });
@@ -44,22 +53,34 @@ export function App() {
   const [models, setModels] = useState(empty<Model>);
   const [keys, setKeys] = useState(empty<Key>);
   const [activity, setActivity] = useState(empty<Activity>);
-  const [job, setJob] = useState<Job>();
-  const [signInOptions, setSignInOptions] = useState<Record<string, unknown>>({
-    newProfile: true,
+  const [signInState, setSignInState] = useState<SignInState>({
+    callbackUrl: "",
+    updatedLink: false,
+    submitting: false,
+    working: false,
   });
+  const completed = useRef<() => void>(() => {});
+  const [signInController] = useState(
+    () => new SignInController(api, setSignInState, () => completed.current()),
+  );
+  const sessionGeneration = useRef(0);
   const [created, setCreated] = useState<{ key: Key; secret: string }>();
   const keyCopyPending = useRef(false);
   const loadSession = async () => {
+    const generation = sessionGeneration.current;
     setSessionError("");
     try {
-      setSession(await api.session());
+      const current = await api.session();
+      if (generation === sessionGeneration.current) setSession(current);
     } catch (error) {
-      setSessionError((error as Error).message);
+      if (generation === sessionGeneration.current)
+        setSessionError((error as Error).message);
     }
   };
   useEffect(() => {
     api.onExpired = () => {
+      sessionGeneration.current++;
+      signInController.deactivate();
       setSession({ configured: true, authenticated: false });
       setCreated(undefined);
       setNotice({ text: "管理会话已失效，请重新登录。", error: true });
@@ -67,9 +88,11 @@ export function App() {
     void loadSession();
     return () => {
       api.onExpired = undefined;
+      signInController.deactivate();
     };
   }, []);
   const refresh = async () => {
+    const generation = sessionGeneration.current;
     const load = async <T,>(
       path: string,
       field: string,
@@ -78,9 +101,11 @@ export function App() {
       setter((state) => ({ ...state, loading: true, error: undefined }));
       try {
         const data = await api.request<Record<string, T[]>>(path);
-        setter({ data: data[field] ?? [], loading: false });
+        if (generation === sessionGeneration.current)
+          setter({ data: data[field] ?? [], loading: false });
       } catch (error) {
-        setter({ data: [], loading: false, error: (error as Error).message });
+        if (generation === sessionGeneration.current)
+          setter({ data: [], loading: false, error: (error as Error).message });
       }
     };
     await Promise.all([
@@ -91,37 +116,16 @@ export function App() {
     ]);
   };
   useEffect(() => {
-    if (session?.authenticated) void refresh();
+    if (session?.authenticated) {
+      void refresh();
+      void signInController.activate();
+    }
+    return () => signInController.deactivate();
   }, [session?.authenticated]);
-  useEffect(() => {
-    if (job?.status !== "pending" || !session?.authenticated) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const current = await api.request<Job>(`/sign-in/${job.id}`);
-        if (stopped) return;
-        setJob(current);
-        if (current.status === "completed") {
-          setNotice({ text: "ChatGPT 账号已连接。" });
-          await refresh();
-        } else if (current.status === "pending") timer = setTimeout(poll, 1500);
-      } catch (error) {
-        if (!stopped) {
-          setNotice({
-            text: `登录状态读取失败：${(error as Error).message}`,
-            error: true,
-          });
-          timer = setTimeout(poll, 3000);
-        }
-      }
-    };
-    timer = setTimeout(poll, 1000);
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [job?.id, job?.status, session?.authenticated]);
+  completed.current = () => {
+    setNotice({ text: "ChatGPT 账号已连接。" });
+    void refresh();
+  };
   const action = async (name: string, work: () => Promise<void>) => {
     if (busy) return;
     setBusy(name);
@@ -134,11 +138,9 @@ export function App() {
       setBusy("");
     }
   };
-  const signIn = (options: Record<string, unknown>) =>
-    action("sign-in", async () => {
-      setSignInOptions(options);
-      setJob(await api.request<Job>("/sign-in", "POST", options));
-    });
+  const signIn = (options: SignInRequest) => {
+    if (!busy) void signInController.start(options);
+  };
   const accountAction = (
     account: Account,
     kind: "default" | "enabled" | "disconnect",
@@ -239,7 +241,9 @@ export function App() {
               onSubmit={(event) => {
                 event.preventDefault();
                 void action("login", async () => {
+                  const generation = sessionGeneration.current;
                   const result = await api.login(password);
+                  if (generation !== sessionGeneration.current) return;
                   setPassword("");
                   setSession(result);
                 });
@@ -323,11 +327,12 @@ export function App() {
             disabled={!!busy}
             onClick={() =>
               void action("logout", async () => {
-                await api.logout();
+                sessionGeneration.current++;
+                signInController.deactivate();
                 setSession({ configured: true, authenticated: false });
                 setCreated(undefined);
-                setJob(undefined);
                 setNotice(undefined);
+                await api.logout();
               })
             }
           >
@@ -366,17 +371,17 @@ export function App() {
           {tab === "accounts" && (
             <Accounts
               resource={accounts}
-              busy={busy}
-              job={job}
+              busy={busy || (signInState.working ? "sign-in" : "")}
+              job={signInState.job}
               onSignIn={signIn}
-              onRetry={() => void signIn(signInOptions)}
-              onCancel={() =>
-                void action("cancel", async () => {
-                  setJob(
-                    await api.request<Job>(`/sign-in/${job?.id}`, "DELETE"),
-                  );
-                })
-              }
+              onRetry={() => void signInController.retry()}
+              onCancel={() => void signInController.cancel()}
+              callbackUrl={signInState.callbackUrl}
+              onCallbackChange={(value) => signInController.setCallback(value)}
+              onSubmitCallback={() => void signInController.submit()}
+              signInError={signInState.error}
+              updatedLink={signInState.updatedLink}
+              submitting={signInState.submitting}
               onAction={accountAction}
             />
           )}

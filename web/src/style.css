@@ -1003,3 +1003,71 @@ td {
     transition: none !important;
   }
 }
+/* Cross-device authorization: selectable transient fields and narrow-screen wrapping. */
+.manual-connect {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 0 24px 20px;
+}
+.sign-in-progress.job {
+  display: block;
+  min-width: 0;
+}
+.sign-in-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sign-in-progress label {
+  display: block;
+  font-weight: 600;
+  margin: 14px 0 8px;
+}
+.sign-in-progress textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--border, #dadfdc);
+  border-radius: 8px;
+  background: white;
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+.authorization-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.authorization-copy textarea {
+  flex: 1;
+  font-family: monospace;
+  font-size: 13px;
+}
+.authorization-copy button {
+  flex-shrink: 0;
+}
+.sign-in-progress form button {
+  margin-top: 10px;
+}
+.sign-in-actions {
+  margin-top: 16px;
+}
+.sign-in-progress .link-updated {
+  font-weight: 600;
+}
+@media (max-width: 600px) {
+  .authorization-copy {
+    flex-direction: column;
+  }
+  .manual-connect {
+    padding: 0 16px 16px;
+  }
+  .sign-in-heading {
+    align-items: flex-start;
+  }
+}

@@ -1,6 +1,89 @@
 import { expect, it, vi } from "vitest";
 import { ApiClient } from "../web/src/api.js";
 
+it("provides typed manual sign-in, recovery, status, cancel and exact callback payload helpers", async () => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const client = new ApiClient(async (url, init) => {
+    calls.push({ url, init });
+    return Response.json(
+      url.endsWith("/active") ? { job: null } : { id: "synthetic" },
+    );
+  });
+  expect(typeof client.startSignIn).toBe("function");
+  await client.startSignIn({ mode: "manual", profileId: "a", reconsent: true });
+  await client.activeSignIn();
+  await client.signInStatus("id /?");
+  await client.submitSignInCallback(
+    "id /?",
+    "http://127.0.0.1:1234/auth/callback?code=synthetic&state=fixture",
+  );
+  await client.cancelSignIn("id /?");
+  expect(calls.map((call) => [call.url, call.init.method])).toEqual([
+    ["/api/admin/sign-in", "POST"],
+    ["/api/admin/sign-in/active", "GET"],
+    ["/api/admin/sign-in/id%20%2F%3F", "GET"],
+    ["/api/admin/sign-in/id%20%2F%3F/callback", "POST"],
+    ["/api/admin/sign-in/id%20%2F%3F", "DELETE"],
+  ]);
+  expect(JSON.parse(calls[3]!.init.body as string)).toEqual({
+    callbackUrl:
+      "http://127.0.0.1:1234/auth/callback?code=synthetic&state=fixture",
+  });
+});
+
+it("ignores a previous session's late 401 after relogin", async () => {
+  let finish!: (response: Response) => void;
+  let logins = 0;
+  const calls: RequestInit[] = [];
+  const client = new ApiClient(async (url, init) => {
+    calls.push(init);
+    if (url.endsWith("/login"))
+      return Response.json({
+        authenticated: true,
+        csrfToken: `csrf-${++logins}`,
+      });
+    if (url.endsWith("/sign-in/old"))
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    return Response.json({ ok: true });
+  });
+  client.onExpired = vi.fn();
+  await client.login("synthetic");
+  const old = client.signInStatus("old");
+  await client.logout();
+  await client.login("synthetic");
+  finish(
+    Response.json(
+      { error: { code: "admin_unauthorized", message: "Expired old session" } },
+      { status: 401 },
+    ),
+  );
+  await expect(old).rejects.toThrow("Expired old session");
+  expect(client.onExpired).not.toHaveBeenCalled();
+  await client.startSignIn({ mode: "manual" });
+  expect(new Headers(calls.at(-1)!.headers).get("x-csrf-token")).toBe("csrf-2");
+});
+
+it("does not restore stale CSRF from bootstrap after logout", async () => {
+  let finish!: (response: Response) => void;
+  const calls: RequestInit[] = [];
+  const client = new ApiClient(async (url, init) => {
+    calls.push(init);
+    return url.endsWith("/session")
+      ? new Promise<Response>((resolve) => {
+          finish = resolve;
+        })
+      : Response.json({ ok: true });
+  });
+  const bootstrap = client.session();
+  await client.logout();
+  finish(Response.json({ authenticated: true, csrfToken: "old-csrf" }));
+  await bootstrap;
+  await client.startSignIn({ mode: "manual" });
+  expect(new Headers(calls.at(-1)!.headers).has("x-csrf-token")).toBe(false);
+});
+
 it("invokes the default browser fetch with its global receiver", async () => {
   vi.stubGlobal("fetch", function (this: unknown) {
     if (this !== globalThis) throw new TypeError("Illegal invocation");
@@ -105,17 +188,25 @@ it("retrieves a retained key only for clipboard and waits for write completion",
   const calls: { url: string; init: RequestInit }[] = [];
   const client = new ApiClient(async (url, init) => {
     calls.push({ url, init });
-    return Response.json(url.endsWith("login")
-      ? { authenticated: true, csrfToken: "csrf" }
-      : { secret: "mp_private_fixture" });
+    return Response.json(
+      url.endsWith("login")
+        ? { authenticated: true, csrfToken: "csrf" }
+        : { secret: "mp_private_fixture" },
+    );
   });
   await client.login("fixture-password");
   let resolveWrite!: () => void;
-  const written = new Promise<void>((resolve) => { resolveWrite = resolve; });
+  const written = new Promise<void>((resolve) => {
+    resolveWrite = resolve;
+  });
   const write = vi.fn(() => written);
   let settled = false;
-  const copy = client.copyKeyToClipboard("id /?", write).then(() => { settled = true; });
-  await vi.waitFor(() => expect(write).toHaveBeenCalledWith("mp_private_fixture"));
+  const copy = client.copyKeyToClipboard("id /?", write).then(() => {
+    settled = true;
+  });
+  await vi.waitFor(() =>
+    expect(write).toHaveBeenCalledWith("mp_private_fixture"),
+  );
   expect(settled).toBe(false);
   expect(calls[1]?.url).toBe("/api/admin/keys/id%20%2F%3F/secret");
   expect(calls[1]?.init.method).toBe("POST");
@@ -127,17 +218,29 @@ it("retrieves a retained key only for clipboard and waits for write completion",
 });
 
 it("propagates clipboard denial so success cannot be shown and a retry can succeed", async () => {
-  const client = new ApiClient(async () => Response.json({ secret: "mp_fixture" }));
-  const denied = vi.fn(async () => { throw new Error("clipboard denied"); });
-  await expect(client.copyKeyToClipboard("key", denied)).rejects.toThrow("clipboard denied");
+  const client = new ApiClient(async () =>
+    Response.json({ secret: "mp_fixture" }),
+  );
+  const denied = vi.fn(async () => {
+    throw new Error("clipboard denied");
+  });
+  await expect(client.copyKeyToClipboard("key", denied)).rejects.toThrow(
+    "clipboard denied",
+  );
   const write = vi.fn(async () => {});
-  await expect(client.copyKeyToClipboard("key", write)).resolves.toBeUndefined();
+  await expect(
+    client.copyKeyToClipboard("key", write),
+  ).resolves.toBeUndefined();
   expect(write).toHaveBeenCalledWith("mp_fixture");
 });
 
 it("does not write clipboard when protected retrieval fails", async () => {
-  const client = new ApiClient(async () => Response.json({ error: { message: "旧密钥无法复制" } }, { status: 409 }));
+  const client = new ApiClient(async () =>
+    Response.json({ error: { message: "旧密钥无法复制" } }, { status: 409 }),
+  );
   const write = vi.fn(async () => {});
-  await expect(client.copyKeyToClipboard("legacy", write)).rejects.toThrow("旧密钥无法复制");
+  await expect(client.copyKeyToClipboard("legacy", write)).rejects.toThrow(
+    "旧密钥无法复制",
+  );
   expect(write).not.toHaveBeenCalled();
 });
