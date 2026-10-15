@@ -1004,13 +1004,6 @@ td {
   }
 }
 /* Cross-device authorization: selectable transient fields and narrow-screen wrapping. */
-.manual-connect {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 0 24px 20px;
-}
 .sign-in-progress.job {
   display: block;
   min-width: 0;
@@ -1063,9 +1056,6 @@ td {
 @media (max-width: 600px) {
   .authorization-copy {
     flex-direction: column;
-  }
-  .manual-connect {
-    padding: 0 16px 16px;
   }
   .sign-in-heading {
     align-items: flex-start;

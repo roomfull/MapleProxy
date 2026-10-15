@@ -112,7 +112,7 @@ export function Accounts({
           <div>
             <h2>ChatGPT 账号</h2>
             <p>
-              在官方登录页授权，可自动打开本机浏览器或复制链接到另一台设备。
+              在官方登录页授权，可自动打开本机浏览器或通过远程登录在另一台设备授权。
             </p>
           </div>
           <span className="count">{resource.data.length} 个账号</span>
@@ -141,10 +141,10 @@ export function Accounts({
           >
             <span aria-hidden="true">＋</span> Continue with ChatGPT
           </button>
-        </div>
-        <div className="manual-connect">
           <button
+            className="primary"
             disabled={disabled}
+            title="适用于另一台设备完成授权"
             onClick={() =>
               onSignIn({
                 newProfile: true,
@@ -153,9 +153,8 @@ export function Accounts({
               })
             }
           >
-            复制链接登录
+            远程登录
           </button>
-          <span className="caption">适用于另一台设备完成授权</span>
         </div>
         {job && (
           <SignInProgress
@@ -245,6 +244,7 @@ export function Accounts({
                 </button>
                 <button
                   disabled={disabled}
+                  title="适用于另一台设备完成授权"
                   onClick={() =>
                     onSignIn({
                       mode: "manual",
@@ -253,7 +253,7 @@ export function Accounts({
                     })
                   }
                 >
-                  复制链接重新授权
+                  远程重新授权
                 </button>
                 <button
                   disabled={!!busy}

@@ -66,9 +66,9 @@ it("disables login and reauthorization controls while active recovery is pending
     await recovery;
     for (const label of [
       "Continue with ChatGPT",
-      "复制链接登录",
+      "远程登录",
       "重新授权",
-      "复制链接重新授权",
+      "远程重新授权",
     ]) {
       expect(pendingButtons.find((button) => button.includes(label))).toContain(
         'disabled=""',
@@ -85,8 +85,8 @@ it("offers separate manual login and reauthorization with full callback guidance
   const html = accountHtml(manualJob);
   for (const text of [
     "Continue with ChatGPT",
-    "复制链接登录",
-    "复制链接重新授权",
+    "远程登录",
+    "远程重新授权",
     "完整回调 URL",
     "地址栏",
     "10 分钟",

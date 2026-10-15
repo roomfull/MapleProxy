@@ -76,7 +76,7 @@ npm start
 
 #### 在另一台设备完成 ChatGPT 授权
 
-1. 在本机控制台点击 **复制链接登录**；已有账号需要更新授权时，点击该账号的 **复制链接重新授权**。
+1. 在本机控制台点击 **远程登录**；已有账号需要更新授权时，点击该账号的 **远程重新授权**。
 2. 复制当前授权链接，在另一台设备的浏览器打开并完成官方登录与授权。
 3. 授权后，另一台设备可能提示无法访问 `127.0.0.1` 回环地址。请从浏览器地址栏复制**完整回调 URL**，保留 `state`、`code`、`client_id` 等全部参数。
 4. 返回本机控制台，将地址粘贴到“完整回调 URL”并点击“提交回调”。只有显示“账号授权完成”才表示完成；提交成功后仍需等待交换和身份验证。
@@ -198,7 +198,7 @@ npm run build
 
 自动测试使用合成账户和本机上游服务，覆盖协议转换、工具多轮往返、流式错误、背压与取消等行为，不调用真实 OpenAI。`npm run smoke` 可启动隔离的浏览器测试服务；它使用临时数据和合成账户，不是生产启动方式。输入 `stop` 可关闭并清理临时数据。
 
-隔离服务密码为 `MapleProxy smoke fixture 2026`。复制链接登录时，`example.invalid` 授权 URL 仅作展示；启动终端输入 `callback` 可打印当前合成成功回调，`retry` 可打印会触发新链接的合成回调，`fail` 可打印失败回调。粘贴后有约两秒的交换阶段；`rotate` 直接更新等待链接，`complete` 完成浏览器模式任务。合成格式为 `http://127.0.0.1:1/auth/callback?state=fixture-attempt-N&code=success&client_id=fixture-client`，`N` 必须与当前链接一致，`code` 也可为 `retry` 或 `fail`。这些控件只存在于独立测试脚本，不会进入生产服务器。真实跨设备 OAuth 仍待用户实际授权验证，见 [验证记录](docs/verification.md)。
+隔离服务密码为 `MapleProxy smoke fixture 2026`。远程登录时，`example.invalid` 授权 URL 仅作展示；启动终端输入 `callback` 可打印当前合成成功回调，`retry` 可打印会触发新链接的合成回调，`fail` 可打印失败回调。粘贴后有约两秒的交换阶段；`rotate` 直接更新等待链接，`complete` 完成浏览器模式任务。合成格式为 `http://127.0.0.1:1/auth/callback?state=fixture-attempt-N&code=success&client_id=fixture-client`，`N` 必须与当前链接一致，`code` 也可为 `retry` 或 `fail`。这些控件只存在于独立测试脚本，不会进入生产服务器。真实跨设备 OAuth 仍待用户实际授权验证，见 [验证记录](docs/verification.md)。
 
 真实接入后，建议先发一条短消息，再验证一次“工具调用 → 客户端执行 → 结果回传 → 模型继续回复”，最后测试流式取消，并在管理页面核对请求记录。模型及工具能力以实际账户响应为准。
 
