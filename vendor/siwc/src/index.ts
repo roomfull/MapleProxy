@@ -40,6 +40,9 @@ export type {
   SessionIdentity,
   SessionState,
   SignInOptions,
+  SignInRequest,
+  SignInMode,
+  SignInProgress,
   StreamResponseOptions,
 } from "./types.js";
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
@@ -464,7 +467,10 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
       pendingSignInProfileId = options.profileId;
       pendingSignInTargetsDefault = !options.newProfile && !options.profileId;
       const operation = ++epoch;
-      const signals = [controller.signal, AbortSignal.timeout(10 * 60_000)];
+      const signals = [
+        controller.signal,
+        AbortSignal.timeout((options.mode === "manual" ? 10 : 5) * 60_000),
+      ];
       if (options.signal) signals.push(options.signal);
       const signal = AbortSignal.any(signals);
       const assertCurrent = () => {
@@ -521,6 +527,8 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
             record = await withFetchContext(config.fetch, () =>
               authorize(config, previous, prepared.hostId, signal, {
                 reconsent: options.reconsent,
+                mode: options.mode,
+                onProgress: options.onProgress,
                 onRegistration: async (clientId) => {
                   issuedClientId = clientId;
                   await store.withLock(async () => {

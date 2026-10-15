@@ -12,6 +12,9 @@ export const smokePassword = "MapleProxy smoke fixture 2026";
 export async function startSmokeFixture(): Promise<{
   url: string;
   seed(): Promise<void>;
+  callback(code?: "success" | "retry" | "fail"): string;
+  complete(code?: "success" | "retry" | "fail"): void;
+  rotate(): void;
   close(): Promise<void>;
 }> {
   const dataDir = await mkdtemp(join(tmpdir(), "maple-browser-smoke-"));
@@ -31,12 +34,138 @@ export async function startSmokeFixture(): Promise<{
       throw new AppError(404, "profile_not_found", "测试账户不存在。");
     return account;
   };
+  let attempt = 0;
+  let currentState = "";
+  let cancelAuthorization: (() => void) | undefined;
+  let rotateAuthorization: (() => void) | undefined;
+  let submitAuthorization: ((url: string) => void) | undefined;
+  const callback = (code: "success" | "retry" | "fail" = "success") => {
+    if (!currentState) throw new Error("No active synthetic authorization.");
+    return `http://127.0.0.1:1/auth/callback?state=${currentState}&code=${code}&client_id=fixture-client`;
+  };
   const runtime: AccountRuntime = {
     listAccounts: async () => accounts.map((a) => ({ ...a })),
-    signIn: async () => {
-      throw new AppError(400, "fixture_only", "此隔离测试不会启动真实 OAuth。");
-    },
-    cancelSignIn: () => {},
+    signIn: (options = {}) =>
+      new Promise((resolveSignIn, rejectSignIn) => {
+        let stopped = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const cleanup = () => {
+          stopped = true;
+          clearTimeout(timer);
+          cancelAuthorization =
+            rotateAuthorization =
+            submitAuthorization =
+              undefined;
+          currentState = "";
+          options.signal?.removeEventListener("abort", cancel);
+        };
+        const cancel = () => {
+          cleanup();
+          rejectSignIn(
+            new AppError(
+              499,
+              "cancelled",
+              "Synthetic authorization cancelled.",
+            ),
+          );
+        };
+        const waiting = () => {
+          if (stopped) return;
+          currentState = `fixture-attempt-${++attempt}`;
+          const state = currentState;
+          let consumed = false;
+          const authorizationUrl = `https://example.invalid/authorize?state=${state}&client_id=fixture-client&redirect_uri=${encodeURIComponent("http://127.0.0.1:1/auth/callback")}`;
+          const submit = (text: string) => {
+            if (stopped || consumed || state !== currentState)
+              throw new AppError(
+                409,
+                "callback_unavailable",
+                "Synthetic callback unavailable.",
+              );
+            let parsed: URL;
+            try {
+              parsed = new URL(text);
+            } catch {
+              throw new AppError(
+                400,
+                "callback_invalid",
+                "Synthetic callback invalid.",
+              );
+            }
+            const code = parsed.searchParams.get("code");
+            if (
+              parsed.origin !== "http://127.0.0.1:1" ||
+              parsed.pathname !== "/auth/callback" ||
+              parsed.searchParams.get("state") !== state ||
+              parsed.searchParams.get("client_id") !== "fixture-client" ||
+              !["success", "retry", "fail"].includes(code ?? "") ||
+              ["state", "code", "client_id"].some(
+                (name) => parsed.searchParams.getAll(name).length !== 1,
+              )
+            )
+              throw new AppError(
+                400,
+                "callback_invalid",
+                "Synthetic callback invalid.",
+              );
+            consumed = true;
+            options.onProgress?.({ phase: "exchanging" });
+            timer = setTimeout(() => {
+              if (stopped) return;
+              if (code === "retry") {
+                waiting();
+                return;
+              }
+              if (code === "fail") {
+                cleanup();
+                rejectSignIn(
+                  new AppError(
+                    400,
+                    "synthetic_authorization_failed",
+                    "Synthetic failure.",
+                  ),
+                );
+                return;
+              }
+              const account = options.profileId
+                ? find(options.profileId)
+                : {
+                    id: `fixture-profile-${attempt}`,
+                    label: options.label ?? "合成跨设备账户",
+                    status: "connected",
+                    sharing: true,
+                    enabled: true,
+                    isDefault: false,
+                    identity: { email: `fixture-${attempt}@example.invalid` },
+                  };
+              Object.assign(account, {
+                status: "connected",
+                sharing: true,
+                enabled: true,
+              });
+              if (!options.profileId) accounts.push(account);
+              cleanup();
+              resolveSignIn({ profileId: account.id });
+            }, 2000);
+          };
+          submitAuthorization = submit;
+          rotateAuthorization = () => {
+            consumed = true;
+            clearTimeout(timer);
+            waiting();
+          };
+          options.onProgress?.({
+            phase: "awaiting_callback",
+            authorizationUrl,
+            submitCallback: submit,
+          });
+        };
+        cancelAuthorization = cancel;
+        options.signal?.addEventListener("abort", cancel, { once: true });
+        if (options.signal?.aborted) cancel();
+        else waiting();
+      }),
+    cancelSignIn: () => cancelAuthorization?.(),
     selectAccount: async (id) => {
       find(id);
       accounts.forEach((a) => {
@@ -109,6 +238,7 @@ export async function startSmokeFixture(): Promise<{
   const close = async () => {
     if (closed) return;
     closed = true;
+    cancelAuthorization?.();
     try {
       await app?.close();
     } finally {
@@ -167,7 +297,14 @@ export async function startSmokeFixture(): Promise<{
       }
     };
     await seed();
-    return { url, seed, close };
+    return {
+      url,
+      seed,
+      callback,
+      complete: (code = "success") => submitAuthorization?.(callback(code)),
+      rotate: () => rotateAuthorization?.(),
+      close,
+    };
   } catch (error) {
     await close();
     throw error;

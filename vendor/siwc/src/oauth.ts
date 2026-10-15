@@ -17,6 +17,7 @@ import type {
   PendingRefresh,
   StoredConnection,
   StoredCredentials,
+  SignInOptions,
 } from "./types.js";
 
 const ISSUER = "https://auth.openai.com";
@@ -297,15 +298,115 @@ interface CallbackResult {
   clientId: string;
 }
 
+const invalidCallback = () =>
+  new ChatGPTError(
+    "callback_invalid",
+    "The callback URL is invalid. Copy the complete callback URL and try again.",
+    false,
+    400,
+  );
+const unavailableCallback = () =>
+  new ChatGPTError(
+    "callback_unavailable",
+    "This sign-in callback is no longer available.",
+    false,
+    409,
+  );
+const oauthCallbackErrors = new Set([
+  "access_denied",
+  "invalid_request",
+  "unauthorized_client",
+  "unsupported_response_type",
+  "invalid_scope",
+  "server_error",
+  "temporarily_unavailable",
+  "interaction_required",
+  "login_required",
+  "consent_required",
+]);
+
+/** Parses local callback text only. Never navigates to or fetches a pasted URL. */
+function validateCallback(
+  input: string,
+  redirectUri: string,
+  state: string,
+  savedClientId?: string,
+): CallbackResult | ChatGPTError {
+  if (typeof input !== "string") throw invalidCallback();
+  const text = input.trim();
+  if (
+    !text ||
+    Buffer.byteLength(text, "utf8") > 16 * 1024 ||
+    /[\x00-\x1f\x7f]/.test(text)
+  )
+    throw invalidCallback();
+  let url: URL;
+  try {
+    if (/[\x00-\x1f\x7f]/.test(decodeURIComponent(text)))
+      throw invalidCallback();
+    url = new URL(text);
+  } catch {
+    throw invalidCallback();
+  }
+  const expected = new URL(redirectUri);
+  const queryStart = text.indexOf("?");
+  if (
+    text.slice(0, queryStart < 0 ? undefined : queryStart) !== redirectUri ||
+    url.origin !== expected.origin ||
+    url.pathname !== expected.pathname ||
+    url.username ||
+    url.password ||
+    text.includes("#")
+  )
+    throw invalidCallback();
+  const params = url.searchParams;
+  for (const key of ["state", "code", "client_id", "error"])
+    if (params.getAll(key).length > 1) throw invalidCallback();
+  const received = Buffer.from(params.get("state") ?? ""),
+    wanted = Buffer.from(state);
+  if (
+    params.getAll("state").length !== 1 ||
+    received.length !== wanted.length ||
+    !timingSafeEqual(received, wanted)
+  )
+    throw invalidCallback();
+  const returnedClientId = params.get("client_id");
+  const clientId = returnedClientId ?? savedClientId;
+  if (
+    returnedClientId !== null &&
+    (!/^[a-zA-Z0-9_-]{1,200}$/.test(returnedClientId) ||
+      returnedClientId === "dynamic_agent_client" ||
+      (savedClientId !== undefined && savedClientId !== returnedClientId))
+  )
+    throw invalidCallback();
+  const error = params.get("error");
+  if (error !== null) {
+    if (params.has("code") || !oauthCallbackErrors.has(error))
+      throw invalidCallback();
+    return apiError({ error });
+  }
+  const code = params.get("code");
+  if (
+    !code ||
+    !clientId ||
+    !/^[a-zA-Z0-9_-]{1,200}$/.test(clientId) ||
+    clientId === "dynamic_agent_client"
+  )
+    throw invalidCallback();
+  return { code, clientId };
+}
+
 async function listenForCallback(
   port: number,
   state: string,
   savedClientId: string | undefined,
   signal: AbortSignal,
+  onAccepted: () => void,
 ) {
   let complete!: (value: CallbackResult) => void;
   let fail!: (error: Error) => void;
   let settled = false;
+  let closed = false;
   const result = new Promise<CallbackResult>((resolve, reject) => {
     complete = resolve;
     fail = reject;
@@ -313,11 +414,24 @@ async function listenForCallback(
   // The callback can arrive while the browser-opening promise is still pending.
   void result.catch(() => undefined);
   let selectedPort = port;
+  const redirectUri = () => `http://127.0.0.1:${selectedPort}${CALLBACK_PATH}`;
   const finish = (value: CallbackResult | ChatGPTError) => {
     if (settled) return;
     settled = true;
     if (value instanceof ChatGPTError) fail(value);
     else complete(value);
+  };
+  const submitCallback = (callbackUrl: string) => {
+    if (closed || settled || signal.aborted) throw unavailableCallback();
+    const value = validateCallback(
+      callbackUrl,
+      redirectUri(),
+      state,
+      savedClientId,
+    );
+    // The gate is synchronous: HTTP and manual submissions cannot both consume it.
+    finish(value);
+    onAccepted();
   };
   const script = 'history.replaceState(null, "", "/auth/complete");';
   const scriptHash = createHash("sha256").update(script).digest("base64");
@@ -328,35 +442,27 @@ async function listenForCallback(
       "Content-Security-Policy",
       `default-src 'none'; script-src 'sha256-${scriptHash}'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'`,
     );
-    let url: URL;
-    try {
-      url = new URL(request.url ?? "/", `http://127.0.0.1:${selectedPort}`);
-    } catch {
-      response.writeHead(400).end("Invalid request");
-      return;
-    }
     if (
       request.method !== "GET" ||
       request.headers.host !== `127.0.0.1:${selectedPort}` ||
-      url.origin !== `http://127.0.0.1:${selectedPort}` ||
-      url.pathname !== CALLBACK_PATH ||
-      settled
+      settled ||
+      closed
     ) {
       response.writeHead(404).end("Not found");
       return;
     }
-    const returnedState = Buffer.from(url.searchParams.get("state") ?? "");
-    const expectedState = Buffer.from(state);
-    if (
-      url.searchParams.getAll("state").length !== 1 ||
-      returnedState.length !== expectedState.length ||
-      !timingSafeEqual(returnedState, expectedState)
-    ) {
-      // Unrelated loopback requests must not consume the pending browser transaction.
+    try {
+      const target = request.url ?? "/";
+      submitCallback(
+        target.startsWith("/") && !target.startsWith("//")
+          ? `http://127.0.0.1:${selectedPort}${target}`
+          : target,
+      );
+    } catch {
       response
         .writeHead(400)
         .end(
-          "Invalid sign-in state. Return to the browser tab that started sign-in.",
+          "Invalid sign-in callback. Copy the complete callback URL and try again.",
         );
       return;
     }
@@ -364,38 +470,12 @@ async function listenForCallback(
     response.end(
       `<!doctype html><html lang="en"><meta charset="utf-8"><title>Return to your app</title><style>body{font:17px system-ui;max-width:32rem;margin:18vh auto;padding:24px;color:#202123}h1{font-size:26px}</style><h1>Return to your app</h1><p>The app will finish checking your ChatGPT connection. You can close this tab.</p><script>${script}</script></html>`,
     );
-    if (url.searchParams.has("error")) {
-      finish(apiError({ error: url.searchParams.get("error") }));
-      return;
-    }
-    const code = url.searchParams.get("code");
-    const returnedClientId = url.searchParams.get("client_id");
-    const clientId = returnedClientId ?? savedClientId;
-    if (
-      !code ||
-      url.searchParams.getAll("code").length !== 1 ||
-      url.searchParams.getAll("client_id").length > 1 ||
-      !clientId ||
-      !/^[a-zA-Z0-9_-]{1,200}$/.test(clientId) ||
-      clientId === "dynamic_agent_client" ||
-      (savedClientId !== undefined &&
-        returnedClientId !== null &&
-        savedClientId !== returnedClientId)
-    ) {
-      finish(
-        new ChatGPTError(
-          "registration_incomplete",
-          "ChatGPT did not complete app registration. Please try signing in again.",
-        ),
-      );
-      return;
-    }
-    finish({ code, clientId });
   };
   const server = createServer(handler);
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
   const close = () => {
+    closed = true;
     signal.removeEventListener("abort", abort);
     server.close();
     server.closeAllConnections();
@@ -435,7 +515,8 @@ async function listenForCallback(
     return {
       result,
       close,
-      redirectUri: `http://127.0.0.1:${selectedPort}${CALLBACK_PATH}`,
+      submitCallback,
+      redirectUri: redirectUri(),
     };
   } catch (error) {
     close();
@@ -443,8 +524,10 @@ async function listenForCallback(
   }
 }
 
-interface AuthorizationOptions {
-  reconsent?: boolean;
+interface AuthorizationOptions extends Pick<
+  SignInOptions,
+  "reconsent" | "mode" | "onProgress"
+> {
   /** Save the issued registration separately before the one-time code exchange. */
   onRegistration?: (clientId: string) => Promise<void>;
 }
@@ -466,6 +549,7 @@ export async function authorize(
     state,
     previous?.clientId,
     signal,
+    () => options.onProgress?.({ phase: "exchanging" }),
   );
   try {
     const authorization = new URL(provider.authorization_endpoint);
@@ -489,7 +573,15 @@ export async function authorize(
     if (previous?.identity?.email)
       authorization.searchParams.set("login_hint", previous.identity.email);
     if (options.reconsent) authorization.searchParams.set("prompt", "consent");
-    await (config.openBrowser ?? defaultOpenBrowser)(authorization.toString());
+    options.onProgress?.({
+      phase: "awaiting_callback",
+      authorizationUrl: authorization.toString(),
+      submitCallback: listener.submitCallback,
+    });
+    if (options.mode !== "manual")
+      await (config.openBrowser ?? defaultOpenBrowser)(
+        authorization.toString(),
+      );
     const callback = await listener.result;
     // A one-time code can fail or expire after registration succeeds. Retain the
     // issued client ID so a fresh authorization does not register another app.

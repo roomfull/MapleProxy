@@ -1,5 +1,14 @@
 import { useState } from "react";
-import type { Account, Activity, Job, Key, Model, Resource } from "./types.js";
+import type {
+  Account,
+  Activity,
+  Job,
+  Key,
+  Model,
+  Resource,
+  SignInRequest,
+} from "./types.js";
+import { SignInProgress } from "./SignInProgress.js";
 
 function ResourceState<T>({
   resource,
@@ -50,13 +59,25 @@ export function Accounts({
   onRetry,
   onCancel,
   onAction,
+  callbackUrl,
+  onCallbackChange,
+  onSubmitCallback,
+  signInError,
+  updatedLink,
+  submitting,
 }: {
   resource: Resource<Account>;
   busy: string;
   job?: Job;
-  onSignIn: (options: Record<string, unknown>) => void;
+  onSignIn: (options: SignInRequest) => void;
   onRetry: () => void;
   onCancel: () => void;
+  callbackUrl: string;
+  onCallbackChange: (value: string) => void;
+  onSubmitCallback: () => void;
+  signInError?: string;
+  updatedLink?: boolean;
+  submitting?: boolean;
   onAction: (
     account: Account,
     kind: "default" | "enabled" | "disconnect",
@@ -90,7 +111,9 @@ export function Accounts({
         <div className="panel-header">
           <div>
             <h2>ChatGPT 账号</h2>
-            <p>授权由官方登录页完成，浏览器将自动打开。</p>
+            <p>
+              在官方登录页授权，可自动打开本机浏览器或通过远程登录在另一台设备授权。
+            </p>
           </div>
           <span className="count">{resource.data.length} 个账号</span>
         </div>
@@ -118,41 +141,38 @@ export function Accounts({
           >
             <span aria-hidden="true">＋</span> Continue with ChatGPT
           </button>
+          <button
+            className="primary"
+            disabled={disabled}
+            title="适用于另一台设备完成授权"
+            onClick={() =>
+              onSignIn({
+                newProfile: true,
+                mode: "manual",
+                ...(label.trim() ? { label: label.trim() } : {}),
+              })
+            }
+          >
+            远程登录
+          </button>
         </div>
         {job && (
-          <div
-            className={`job ${job.status === "failed" ? "error" : ""}`}
-            role="status"
-          >
-            <div>
-              <strong>
-                {job.status === "pending"
-                  ? "等待你完成浏览器授权…"
-                  : job.status === "completed"
-                    ? "账号授权完成"
-                    : job.status === "cancelled"
-                      ? "登录已取消"
-                      : "登录未完成"}
-              </strong>
-              <p>
-                {job.status === "pending"
-                  ? "在官方登录页选择账号并授权共享。此过程最长等待 5 分钟。"
-                  : job.status === "failed"
-                    ? `错误代码：${job.code ?? "sign_in_failed"}。检查浏览器后可重新尝试。`
-                    : job.status === "cancelled"
-                      ? "可以重新发起登录，取消操作不会撤销已连接的账号。"
-                      : "账号列表已更新，可手动设置默认账号。"}
-              </p>
-            </div>
-            {job.status === "pending" ? (
-              <button disabled={!!busy} onClick={onCancel}>
-                取消登录
-              </button>
-            ) : job.status !== "completed" ? (
-              <button disabled={!!busy} onClick={onRetry}>
-                重新登录
-              </button>
-            ) : null}
+          <SignInProgress
+            job={job}
+            busy={!!busy}
+            callbackUrl={callbackUrl}
+            onCallbackChange={onCallbackChange}
+            onSubmitCallback={onSubmitCallback}
+            onCancel={onCancel}
+            onRetry={onRetry}
+            error={signInError}
+            updatedLink={updatedLink}
+            submitting={submitting}
+          />
+        )}
+        {!job && signInError && (
+          <div className="notice error" role="alert">
+            {signInError}
           </div>
         )}
         <ResourceState
@@ -221,6 +241,19 @@ export function Accounts({
                   }
                 >
                   重新授权
+                </button>
+                <button
+                  disabled={disabled}
+                  title="适用于另一台设备完成授权"
+                  onClick={() =>
+                    onSignIn({
+                      mode: "manual",
+                      profileId: account.id,
+                      reconsent: true,
+                    })
+                  }
+                >
+                  远程重新授权
                 </button>
                 <button
                   disabled={!!busy}
@@ -410,7 +443,9 @@ export function Keys({
                   >
                     {busy === `copy-key-${key.id}` ? "复制中…" : "复制密钥"}
                   </button>
-                  {!key.canCopy && <small>旧密钥未保存完整值，请新建密钥后复制。</small>}
+                  {!key.canCopy && (
+                    <small>旧密钥未保存完整值，请新建密钥后复制。</small>
+                  )}
                 </div>
                 <button
                   className="danger quiet"
